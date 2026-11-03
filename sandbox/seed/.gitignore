@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+todo.json
+
+# agent-kit
+.agent/runs/
+.knowledge/index.sqlite
