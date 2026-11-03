@@ -1,0 +1,18 @@
+{
+  "tracker": {
+    "type": "github",
+    "labels": {"ready": "ready-for-agent", "wip": "in-progress", "done": "done"},
+    "blocked_by_heading": "blocked by"
+  },
+  "branch": {"base": "main", "remote": "origin", "name": "{key}-{slug}"},
+  "workspace": {"mode": "worktree", "setup": [], "env": {}},
+  "autofix": [],
+  "gates": [{"name": "test", "cmd": "python3 -m unittest discover -s tests"}],
+  "merge": {"policy": "pause", "max_open_prs": 1, "poll_seconds": 60},
+  "loop": {"max_fix_rounds": 1, "max_review_rounds": 1, "timeout_seconds": 900},
+  "models": {"implement": "sonnet", "review": "sonnet", "summarize": "haiku"},
+  "budget_usd": {"implement": 1, "fix": 0.5, "review": 0.5, "summarize": 0.1},
+  "implement": {"allow_bash": ["python3 -m unittest*", "python3 -m todo.cli*"]},
+  "kb": {"llm_summaries": false},
+  "pr": {"sections": ["Summary", "Evidence"], "include_review": true, "draft_on_fail": true}
+}
