@@ -1,0 +1,20 @@
+[project]
+name = "agent-kit"
+version = "0.1.0"
+description = "Stack-independent ticket loop and project knowledge base for coding agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+agent-kit = "agentkit.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["agentkit"]
+
+[tool.setuptools.package-data]
+agentkit = []

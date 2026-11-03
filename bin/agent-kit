@@ -5,4 +5,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 from agentkit.cli import main  # noqa: E402
 
-sys.exit(main() or 0)
+try:
+    sys.exit(main() or 0)
+except RuntimeError as e:  # failed external command: show it without a traceback
+    print(f"[agent-kit] error: {e}", file=sys.stderr)
+    sys.exit(1)
+except KeyboardInterrupt:
+    sys.exit(130)

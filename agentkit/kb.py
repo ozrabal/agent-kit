@@ -126,7 +126,7 @@ def symbols(text, lang):
 def _first_sentence(s, n=200):
     s = re.sub(r"\s+", " ", s or "").strip()
     m = re.search(r"(?<=[.!?])\s", s)
-    s = s[: m.start()] if m and m.start() > 20 else s
+    s = s[: m.start()] if m and m.start() > 10 else s
     return s[:n]
 
 
@@ -452,10 +452,17 @@ def terms(text, limit=30):
     text = text or ""
     ticks = re.findall(r"`([^`]{2,80})`", text)
     freq = {}
-    for i, chunk in enumerate([" ".join(ticks), text]):
-        for t in _expand(chunk).split():
-            if len(t) >= 3 and t not in STOP and not t.isdigit():
-                freq[t] = freq.get(t, 0) + (3 if i == 0 else 1)
+
+    def add(t, w):
+        if len(t) >= 3 and t not in STOP and not t.isdigit():
+            freq[t] = freq.get(t, 0) + w
+
+    for tok in re.findall(r"[A-Za-z][A-Za-z0-9]*", " ".join(ticks)):
+        add(tok.lower(), 6)  # exact identifiers from `code` spans rank first
+        for part in _expand(tok).split()[1:]:
+            add(part, 2)
+    for t in _expand(text).split():
+        add(t, 1)
     return [t for t, _ in sorted(freq.items(), key=lambda x: -x[1])][:limit]
 
 

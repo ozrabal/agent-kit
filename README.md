@@ -9,10 +9,18 @@ called only to implement, fix, review and write one-line file summaries.
 ## Install
 
 ```sh
-ln -sf ~/.agent-kit/bin/agent-kit ~/.local/bin/agent-kit
+git clone <this repo> && cd agent-kit && ./install.sh
 ```
 
-The Claude skill in `~/.claude/skills/agent-kit/` tells every session how to use it.
+This links `agent-kit` into `~/.local/bin` and the Claude skill into `~/.claude/skills/agent-kit`,
+which tells every Claude session how to use the knowledge base. Edits in the clone take effect
+immediately.
+
+## Develop
+
+```sh
+python3 -m unittest discover -s tests
+```
 
 ## Per project
 
