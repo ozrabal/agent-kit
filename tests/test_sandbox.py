@@ -44,3 +44,34 @@ class SandboxTickets(unittest.TestCase):
     def test_every_ticket_has_probe(self):
         for t in self.tickets:
             self.assertTrue(t.get("probe"), t["title"])
+
+
+class SafeDelete(unittest.TestCase):
+    def test_guard(self):
+        import subprocess
+        import tempfile
+        slug = "me/agent-kit-sandbox"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            reset.check_safe_dir(tmp / "missing", slug)  # nothing to delete: ok
+            (tmp / "empty").mkdir()
+            reset.check_safe_dir(tmp / "empty", slug)
+            plain = tmp / "plain"
+            plain.mkdir()
+            (plain / "f").write_text("x")
+            with self.assertRaises(SystemExit):
+                reset.check_safe_dir(plain, slug)
+            outer = tmp / "outer"  # a real project with the sandbox name as a subfolder
+            (outer / "agent-kit-sandbox").mkdir(parents=True)
+            (outer / "agent-kit-sandbox" / "f").write_text("x")
+            subprocess.run(["git", "init", "-q", str(outer)], check=True)
+            subprocess.run(["git", "-C", str(outer), "remote", "add", "origin",
+                            "https://github.com/me/agent-kit-sandbox-not.git"], check=True)
+            with self.assertRaises(SystemExit):
+                reset.check_safe_dir(outer / "agent-kit-sandbox", slug)
+            clone = tmp / "clone"
+            subprocess.run(["git", "init", "-q", str(clone)], check=True)
+            (clone / "f").write_text("x")
+            subprocess.run(["git", "-C", str(clone), "remote", "add", "origin",
+                            f"https://github.com/{slug}.git"], check=True)
+            reset.check_safe_dir(clone, slug)  # the sandbox clone itself: ok

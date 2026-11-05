@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Rebuild the agent-kit sandbox: a private GitHub repo plus a local clone, reset to a known state.
 
-    python3 sandbox/reset.py            # reset an existing sandbox repo
-    python3 sandbox/reset.py --create   # first time: also create the private GitHub repo
+    python3 sandbox/reset.py --create --dir ~/Private   # first time: create the repo, remember the folder
+    python3 sandbox/reset.py                            # reset, using the remembered folder
 
 What it does (only to the sandbox repo):
   close open PRs and delete their branches, delete other remote branches, close open issues,
   force-push sandbox/seed as a fresh `main`, recreate labels and the tickets from issues.json,
-  and rebuild the local clone at <root>/repo (worktrees go to <root>/.agent-wt).
+  and rebuild the local clone at <dir>/<repo>. Worktrees go to <dir>/.agent-wt/<repo>, the
+  agent-kit default; only that subfolder is deleted, never other projects' worktrees.
+
+The folder is saved in sandbox/.local.json (not committed); pass --dir again to change it.
 
 Refuses any repo name without "sandbox" in it, so it can't be pointed at a real project.
 """
@@ -22,6 +25,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SEED = HERE / "seed"
 ISSUES = HERE / "issues.json"
+LOCAL = HERE / ".local.json"  # remembered settings for this machine, gitignored
 
 
 def run(cmd, cwd=None, check=True):
@@ -51,15 +55,31 @@ def check_safe_dir(path, slug):
         return
     if path.is_dir() and not any(path.iterdir()):
         return
+    # The dir must be a repo root itself; otherwise git would answer for a parent repo.
+    top = run(["git", "rev-parse", "--show-toplevel"], cwd=path, check=False).stdout.strip()
     url = run(["git", "remote", "get-url", "origin"], cwd=path, check=False).stdout.strip()
-    if slug not in url:
+    if not top or Path(top).resolve() != path.resolve() or not url.rstrip("/").removesuffix(".git").endswith(slug):
         sys.exit(f"refusing to delete {path}: not a clone of {slug} (origin: {url or 'none'})")
+
+
+def sandbox_dir(arg):
+    """--dir if given (and remembered), else the remembered one."""
+    saved = json.loads(LOCAL.read_text()) if LOCAL.exists() else {}
+    if arg:
+        d = str(Path(arg).expanduser().resolve())
+        if d != saved.get("dir"):
+            LOCAL.write_text(json.dumps({**saved, "dir": d}, indent=2) + "\n")
+            print(f"remembered sandbox folder {d} in {LOCAL.name}")
+        return Path(d)
+    if saved.get("dir"):
+        return Path(saved["dir"])
+    sys.exit("say where to put the sandbox: --dir <folder> (e.g. --dir ~/Private); it is remembered")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", default="agent-kit-sandbox", help="GitHub repo name (must contain 'sandbox')")
-    ap.add_argument("--root", default=str(Path.home() / "agent-kit-sandbox"), help="local parent folder")
+    ap.add_argument("--dir", help="folder that holds the local clone (remembered after the first use)")
     ap.add_argument("--create", action="store_true", help="create the private GitHub repo if missing")
     a = ap.parse_args()
 
@@ -67,9 +87,11 @@ def main():
         sys.exit("the repo name must contain 'sandbox' (guard against resetting a real project)")
     owner = gh("api", "user", "-q", ".login").stdout.strip()
     slug = f"{owner}/{a.repo}"
-    root = Path(a.root).expanduser().resolve()
-    local = root / "repo"
-    wt = root / ".agent-wt"
+    root = sandbox_dir(a.dir)
+    if not root.is_dir():
+        sys.exit(f"{root} does not exist")
+    local = root / a.repo
+    wt = root / ".agent-wt" / a.repo
 
     exists = gh("repo", "view", slug, "--json", "name", check=False).returncode == 0
     if not exists:
