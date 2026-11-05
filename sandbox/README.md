@@ -12,15 +12,18 @@ A disposable private GitHub repo for trying agent-kit end to end without touchin
 ## Use
 
 ```sh
-python3 sandbox/reset.py --create     # first time (creates <you>/agent-kit-sandbox, private)
-python3 sandbox/reset.py              # back to a clean state
-cd ~/agent-kit-sandbox/repo
+python3 sandbox/reset.py --create --dir ~/Private   # first time: creates <you>/agent-kit-sandbox (private)
+python3 sandbox/reset.py                            # back to a clean state, same folder
+cd ~/Private/agent-kit-sandbox
 agent-kit kb update && agent-kit status
 agent-kit run --dry-run               # free: no LLM calls
 agent-kit run                         # costs money: about $1-2 per ticket with these budgets
 ```
 
-Worktrees land in `~/agent-kit-sandbox/.agent-wt/`, so nothing leaks next to your real repos.
+`--dir` is the folder that holds the clone; it is saved in `sandbox/.local.json` (not committed),
+so later resets need no flag. Pass `--dir` again to move it. Worktrees go to
+`<dir>/.agent-wt/agent-kit-sandbox/`; a reset deletes only that subfolder, never the worktrees
+of other projects in the same folder.
 
 ## Tickets
 

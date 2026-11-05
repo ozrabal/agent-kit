@@ -28,4 +28,4 @@ python3 -m py_compile agentkit/*.py
 
 Try changes against the sandbox (`sandbox/README.md`), never a real project: `python3
 sandbox/reset.py`, then `agent-kit run --dry-run` and `agent-kit kb context '#<n>'` in
-`~/agent-kit-sandbox/repo` before anything that calls the LLM.
+the sandbox clone (`<dir>/agent-kit-sandbox`, folder saved in `sandbox/.local.json`) before anything that calls the LLM.
