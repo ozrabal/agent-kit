@@ -214,7 +214,8 @@ class Loop:
             text, cwd=ws, step=step, model=c["models"]["implement"], effort=c["effort"]["implement"],
             schema=IMPL_SCHEMA, tools=c["implement"]["tools"], permission_mode=c["implement"]["permission_mode"],
             allow=self._allow(), budget=c["budget_usd"]["fix" if resume else "implement"], resume=resume,
-            persist=True, timeout=c["loop"]["timeout_seconds"], cost_log=run.cost_log)
+            persist=True, timeout=c["loop"]["timeout_seconds"], cost_log=run.cost_log,
+            stream_log=run.dir / f"{step.replace(':', '-')}.log")
         run.set(session=sid or resume, impl=res)
         return res
 
@@ -234,7 +235,7 @@ class Loop:
         res, _ = llm.claude(text, cwd=ws, step="review", model=c["models"]["review"], effort=c["effort"]["review"],
                             schema=REVIEW_SCHEMA, lean=True, system=REVIEW_SYSTEM, tools=c["review"]["tools"],
                             budget=c["budget_usd"]["review"], timeout=c["loop"]["timeout_seconds"],
-                            cost_log=run.cost_log)
+                            cost_log=run.cost_log, stream_log=run.dir / f"review-{len(run['reviews'] or []) + 1}.log")
         block = [f for f in res["findings"] if f["severity"] in c["review"]["block_on"]]
         unmet = [x for x in res["criteria"] if not x["met"]]
         res["pass"] = not block and not unmet
