@@ -3,9 +3,14 @@
 lean=True replaces the system prompt and drops MCP servers, which cuts a
 trivial call from ~50k to ~1k input tokens. Use it for summarize and review.
 Every call is appended to a cost log.
+
+stream_log=<path> streams the session instead (stream-json): every event is
+written to that file and each tool call is printed as it happens. Same tokens,
+same result; only the output format differs.
 """
 import json
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -18,8 +23,9 @@ class LLMError(RuntimeError):
 
 def claude(prompt, *, cwd, step, model=None, schema=None, lean=False, system=None,
            append_system=None, tools=None, permission_mode=None, allow=None, effort=None,
-           budget=None, resume=None, persist=False, timeout=3600, cost_log=None):
-    cmd = ["claude", "-p", "--output-format", "json", "--strict-mcp-config"]
+           budget=None, resume=None, persist=False, timeout=3600, cost_log=None, stream_log=None):
+    fmt = ["stream-json", "--verbose"] if stream_log else ["json"]
+    cmd = ["claude", "-p", "--output-format", *fmt, "--strict-mcp-config"]
     if model:
         cmd += ["--model", model]
     if effort:
@@ -44,14 +50,17 @@ def claude(prompt, *, cwd, step, model=None, schema=None, lean=False, system=Non
         cmd += ["--allowedTools", *allow]  # variadic: keep last; prompt goes via stdin
 
     t0 = time.time()
-    try:
-        r = subprocess.run(cmd, cwd=cwd, input=prompt, text=True, capture_output=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise LLMError(f"{step}: timed out after {timeout}s")
-    try:
-        d = json.loads(r.stdout)
-    except json.JSONDecodeError:
-        raise LLMError(f"{step}: no JSON from claude (exit {r.returncode}): {(r.stderr or r.stdout)[-1500:]}")
+    if stream_log:
+        d = _stream(cmd, prompt, cwd=cwd, step=step, timeout=timeout, path=stream_log)
+    else:
+        try:
+            r = subprocess.run(cmd, cwd=cwd, input=prompt, text=True, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise LLMError(f"{step}: timed out after {timeout}s")
+        try:
+            d = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            raise LLMError(f"{step}: no JSON from claude (exit {r.returncode}): {(r.stderr or r.stdout)[-1500:]}")
 
     u = d.get("usage") or {}
     row = {
@@ -74,6 +83,99 @@ def claude(prompt, *, cwd, step, model=None, schema=None, lean=False, system=Non
     if schema and result is None:
         raise LLMError(f"{step}: no structured output returned")
     return result, d.get("session_id")
+
+
+def _stream(cmd, prompt, *, cwd, step, timeout, path):
+    """Run claude with stream-json: log every event, print tool calls live, return the result event."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    fired = threading.Event()
+
+    def kill():
+        fired.set()
+        proc.kill()
+
+    timer = threading.Timer(timeout, kill)
+    timer.start()
+    result, other = None, []
+    try:
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+        with path.open("a") as f:
+            for line in proc.stdout:
+                f.write(line)
+                f.flush()
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    other.append(line)
+                    continue
+                if ev.get("type") == "result":
+                    result = ev
+                for text in describe(ev, cwd):
+                    log(f"  {step} | {text}")
+        proc.wait()
+    finally:
+        timer.cancel()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    if fired.is_set():
+        raise LLMError(f"{step}: timed out after {timeout}s")
+    if result is None:
+        raise LLMError(f"{step}: no result from claude (exit {proc.returncode}): {''.join(other)[-1500:]}")
+    return result
+
+
+def _short(value, n=100):
+    value = " ".join(str(value).split())
+    return value if len(value) <= n else value[: n - 3] + "..."
+
+
+def describe(ev, cwd=None):
+    """One short line per tool call or failed tool result in a stream-json event."""
+    out = []
+    t = ev.get("type")
+    content = (ev.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return out
+    for c in content:
+        if t == "assistant" and c.get("type") == "tool_use":
+            name, inp = c.get("name"), c.get("input") or {}
+            if name == "StructuredOutput":
+                continue
+            arg = inp.get("file_path") or inp.get("path") or inp.get("command") or inp.get("pattern") or ""
+            if cwd and isinstance(arg, str) and arg.startswith(str(cwd).rstrip("/") + "/"):
+                arg = arg[len(str(cwd).rstrip("/")) + 1:]
+            out.append(f"{name} {_short(arg)}".rstrip())
+        elif t == "user" and c.get("type") == "tool_result" and c.get("is_error"):
+            body = c.get("content")
+            if isinstance(body, list):
+                body = " ".join(x.get("text", "") for x in body if isinstance(x, dict))
+            out.append(f"  ! {_short(body)}")
+    return out
+
+
+def render_log(path, cwd=None):
+    """Readable lines for a saved stream log: tool calls, errors, and the final result."""
+    lines = []
+    for raw in Path(path).read_text().splitlines():
+        try:
+            ev = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        lines += describe(ev, cwd)
+        if ev.get("type") == "assistant":
+            for c in (ev.get("message") or {}).get("content") or []:
+                if c.get("type") == "text" and c.get("text", "").strip():
+                    lines.append(f"  > {_short(c['text'], 160)}")
+        if ev.get("type") == "result":
+            lines.append(f"= {'error' if ev.get('is_error') else 'done'}: turns={ev.get('num_turns')} "
+                         f"${round(ev.get('total_cost_usd') or 0, 4)} "
+                         f"denied={len(ev.get('permission_denials') or [])}")
+    return lines
 
 
 def cost_summary(path):

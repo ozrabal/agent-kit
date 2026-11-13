@@ -34,6 +34,7 @@ failing lines. `agent-kit gates <name>` runs one; `--fix` runs formatters first.
 - `agent-kit status`: ready and blocked tickets, running PRs and their cost.
 - `agent-kit run [--ticket N] [--wait] [--max N] [--dry-run]`: one ticket at a time, dependency
   aware; pauses for the human to merge each PR. `--wait` polls for the merge without LLM cost.
-- Run state and cost logs: `.agent/runs/<issue>/` (`state.json`, `cost.jsonl`, `pr.md`, `context.md`).
+- Run state and cost logs: `.agent/runs/<issue>/` (`state.json`, `cost.jsonl`, `pr.md`, `context.md`,
+  and one `<step>.log` per Claude session). `agent-kit log <issue>` prints what Claude did, readably.
 - A failed run leaves a draft PR with a "Needs a human" section; rerunning `--ticket N` resumes it.
 - Config: `.agent/config.json` (gates, labels, models, budgets, PR sections). `agent-kit init` drafts it.

@@ -26,6 +26,10 @@ def main(argv=None):
     sub.add_parser("next", help="print the next unblocked ticket as JSON")
     sub.add_parser("reconcile", help="mark merged PRs done and clean up worktrees")
 
+    p = sub.add_parser("log", help="show what Claude did in a ticket run (tool calls, errors, results)")
+    p.add_argument("ticket", type=int)
+    p.add_argument("step", nargs="?", help="only this step, e.g. implement, review-1, fix-gates-1")
+
     p = sub.add_parser("gates", help="run quality gates; prints only failures")
     p.add_argument("names", nargs="*")
     p.add_argument("--fix", action="store_true", help="run autofix commands first")
@@ -69,6 +73,19 @@ def main(argv=None):
                 text, key = f"{i['title']}\n{i['body']}", tr.key(i)
                 related = [tr.key(tr.get(b)) for b in tr.blockers(i)]
             print(kb.context(cfg, here, text, key=key, related_keys=related))
+        return 0
+
+    if a.cmd == "log":
+        d = Path(cfg["_root"]) / ".agent" / "runs" / str(a.ticket)
+        logs = sorted(d.glob("*.log"), key=lambda f: f.stat().st_mtime)
+        if a.step:
+            logs = [f for f in logs if f.stem == a.step]
+        if not logs:
+            die(f"no Claude logs in {d}" + (f" for step {a.step}" if a.step else ""))
+        ws = (json.loads((d / "state.json").read_text()).get("ws") if (d / "state.json").exists() else None)
+        for f in logs:
+            print(f"## {f.stem}")
+            print("\n".join(llm.render_log(f, cwd=ws)) or "(empty)")
         return 0
 
     if not cfg["_configured"]:

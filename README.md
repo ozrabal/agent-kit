@@ -28,6 +28,7 @@ python3 -m unittest discover -s tests
 agent-kit init [--claude-md]   # detect stack -> .agent/config.json, seed .knowledge/, .gitignore
 agent-kit kb update            # build the knowledge base (first run: ~1 min, cents)
 agent-kit status               # ready / blocked tickets
+agent-kit log 12               # what Claude did on ticket #12: tool calls, errors, cost
 agent-kit run --dry-run        # show the prompt for the next ticket, change nothing
 agent-kit run                  # do the next unblocked ticket, open a PR, pause for merge
 agent-kit run --wait           # keep going: poll for merges (no LLM), then the next ticket
@@ -66,6 +67,8 @@ If gates or review still fail after the rounds, the loop pushes a **draft** PR w
 - Summaries come from header comments when present; the LLM only fills gaps, and only re-runs
   when a file's symbols or size change a lot.
 - Every call is logged with cost: `.agent/runs/<n>/cost.jsonl`; `agent-kit status` shows totals.
+- Implement, fix and review stream their sessions to `.agent/runs/<n>/<step>.log` and print each
+  tool call while they run. Same tokens as before; only the output format changes.
 
 ## Config (`.agent/config.json`)
 
