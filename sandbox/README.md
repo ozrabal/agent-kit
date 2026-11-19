@@ -25,6 +25,17 @@ so later resets need no flag. Pass `--dir` again to move it. Worktrees go to
 `<dir>/.agent-wt/agent-kit-sandbox/`; a reset deletes only that subfolder, never the worktrees
 of other projects in the same folder.
 
+## Benchmark
+
+```sh
+python3 sandbox/bench.py                                  # reset, run tickets 1,4,5, save the report
+python3 sandbox/bench.py --compare sandbox/bench/a.json sandbox/bench/b.json
+```
+
+It costs money (about $1-2 per ticket). Results go to `sandbox/bench/<date>-<sha>.json` (not committed).
+Run it on `main` and on your branch, then put the `--compare` output in the PR. Tickets are matched
+by title, since a reset gives them new numbers.
+
 ## Tickets
 
 | # | Ticket | What it tests |

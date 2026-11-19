@@ -31,7 +31,10 @@ failing lines. `agent-kit gates <name>` runs one; `--fix` runs formatters first.
 
 ## Ticket loop
 
+- `agent-kit doctor`: checks tools, auth, config, labels, base branch, gates and knowledge base, with a
+  fix hint for each failure. Run it first when a run fails for setup reasons.
 - `agent-kit status`: ready and blocked tickets, running PRs and their cost.
+- `agent-kit report [--json] [--since <ts>]`: cost, tokens, fix and review rounds per ticket run.
 - `agent-kit run [--ticket N] [--wait] [--max N] [--dry-run]`: one ticket at a time, dependency
   aware; pauses for the human to merge each PR. `--wait` polls for the merge without LLM cost.
 - Run state and cost logs: `.agent/runs/<issue>/` (`state.json`, `cost.jsonl`, `pr.md`, `context.md`,

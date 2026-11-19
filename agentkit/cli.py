@@ -30,6 +30,13 @@ def main(argv=None):
     p.add_argument("ticket", type=int)
     p.add_argument("step", nargs="?", help="only this step, e.g. implement, review-1, fix-gates-1")
 
+    p = sub.add_parser("doctor", help="check tools, auth, config, labels, base branch, gates and knowledge base")
+    p.add_argument("--no-gates", action="store_true", help="skip running the gates (they can be slow)")
+
+    p = sub.add_parser("report", help="cost, tokens and rounds per ticket run")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--since", type=int, help="only LLM calls at or after this unix timestamp")
+
     p = sub.add_parser("gates", help="run quality gates; prints only failures")
     p.add_argument("names", nargs="*")
     p.add_argument("--fix", action="store_true", help="run autofix commands first")
@@ -50,6 +57,12 @@ def main(argv=None):
 
     cfg = config.load()
     here = repo_root()  # current checkout (may be a worktree)
+
+    if a.cmd == "doctor":
+        from . import doctor
+        res = doctor.check(cfg, run_gates=None if a.no_gates else (lambda: gates.run(cfg, here)))
+        print(doctor.render(res))
+        return 0 if doctor.all_ok(res) else 1
 
     if a.cmd == "gates":
         if a.fix:
@@ -73,6 +86,12 @@ def main(argv=None):
                 text, key = f"{i['title']}\n{i['body']}", tr.key(i)
                 related = [tr.key(tr.get(b)) for b in tr.blockers(i)]
             print(kb.context(cfg, here, text, key=key, related_keys=related))
+        return 0
+
+    if a.cmd == "report":
+        from . import report
+        rep = report.collect(Path(cfg["_root"]) / ".agent" / "runs", since=a.since)
+        print(json.dumps(rep, indent=2) if a.json else report.render(rep))
         return 0
 
     if a.cmd == "log":
