@@ -65,6 +65,19 @@ def append_jsonl(path, row):
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def read_jsonl(path):
+    """Rows of a JSON-lines file; [] when it does not exist. Broken lines are skipped."""
+    path, rows = Path(path), []
+    if not path.exists():
+        return rows
+    for line in path.read_text().splitlines():
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return rows
+
+
 def slug(text, n=40):
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return s[:n].rstrip("-") or "task"

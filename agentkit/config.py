@@ -72,9 +72,18 @@ def _merge(base, over):
     return base
 
 
+def config_path(root):
+    return Path(root) / ".agent" / "config.json"
+
+
+def runs_dir(cfg):
+    """Local run state: .agent/runs/<issue>/ plus kb-cost.jsonl."""
+    return Path(cfg["_root"]) / ".agent" / "runs"
+
+
 def load(cwd=None):
     root = main_root(cwd)
-    user = read_json(root / ".agent" / "config.json", {})
+    user = read_json(config_path(root), {})
     cfg = _merge(copy.deepcopy(DEFAULTS), user)
     cfg["_root"] = str(root)
     cfg["_configured"] = bool(user)

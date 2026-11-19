@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from .util import append_jsonl, log
+from .util import append_jsonl, log, read_jsonl
 
 
 class LLMError(RuntimeError):
@@ -178,14 +178,17 @@ def render_log(path, cwd=None):
     return lines
 
 
+def step_kind(row):
+    """A cost row's step without its round number: "fix-gates:2" -> "fix-gates"."""
+    return (row.get("step") or "").split(":")[0]
+
+
 def cost_summary(path):
-    p = Path(path)
-    if not p.exists():
+    if not Path(path).exists():
         return None
-    rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
     by = {}
-    for r in rows:
-        s = by.setdefault(r["step"].split(":")[0], {"calls": 0, "usd": 0.0, "secs": 0.0})
+    for r in read_jsonl(path):
+        s = by.setdefault(step_kind(r), {"calls": 0, "usd": 0.0, "secs": 0.0})
         s["calls"] += 1
         s["usd"] += r.get("usd") or 0
         s["secs"] += r.get("secs") or 0

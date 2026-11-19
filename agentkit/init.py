@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from . import kb
-from .config import DEFAULTS, load
+from .config import DEFAULTS, config_path, load
 from .tracker import default_branch
 from .util import log, main_root, read_json, write_json
 
@@ -80,7 +80,7 @@ def detect(root):
 
 def init(force=False, claude_md=False):
     root = main_root()
-    cfgp = root / ".agent" / "config.json"
+    cfgp = config_path(root)
     if cfgp.exists() and not force:
         log(f"{cfgp} exists (use --force to regenerate)")
     else:

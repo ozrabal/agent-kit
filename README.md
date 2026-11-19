@@ -27,7 +27,9 @@ python3 -m unittest discover -s tests
 ```sh
 agent-kit init [--claude-md]   # detect stack -> .agent/config.json, seed .knowledge/, .gitignore
 agent-kit kb update            # build the knowledge base (first run: ~1 min, cents)
+agent-kit doctor [--no-gates]  # check tools, gh auth, config keys, labels, base branch, gates, KB
 agent-kit status               # ready / blocked tickets
+agent-kit report [--json]      # cost, tokens, fix and review rounds per ticket run
 agent-kit log 12               # what Claude did on ticket #12: tool calls, errors, cost
 agent-kit run --dry-run        # show the prompt for the next ticket, change nothing
 agent-kit run                  # do the next unblocked ticket, open a PR, pause for merge
@@ -66,7 +68,10 @@ If gates or review still fail after the rounds, the loop pushes a **draft** PR w
 - Fix rounds resume the implementer's session (cached context) instead of starting over.
 - Summaries come from header comments when present; the LLM only fills gaps, and only re-runs
   when a file's symbols or size change a lot.
-- Every call is logged with cost: `.agent/runs/<n>/cost.jsonl`; `agent-kit status` shows totals.
+- Every call is logged with cost: `.agent/runs/<n>/cost.jsonl`; `agent-kit status` shows totals and
+  `agent-kit report` breaks them down per ticket (tokens, fix and review rounds).
+- `python3 sandbox/bench.py` runs fixed sandbox tickets and saves that report; `--compare a.json b.json`
+  shows what a change did to cost, tokens and rounds.
 - Implement, fix and review stream their sessions to `.agent/runs/<n>/<step>.log` and print each
   tool call while they run. Same tokens as before; only the output format changes.
 

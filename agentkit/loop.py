@@ -15,7 +15,7 @@ from pathlib import Path
 from string import Template
 
 from . import gates, kb, llm
-from .config import READ_ONLY_BASH, fmt
+from .config import READ_ONLY_BASH, fmt, runs_dir
 from .tracker import make
 from .util import KIT_DIR, clip, log, out, read_json, sh, slug, write_json
 
@@ -66,7 +66,7 @@ class Run:
     """State of one ticket, persisted in <repo>/.agent/runs/<number>/state.json."""
 
     def __init__(self, cfg, number):
-        self.dir = Path(cfg["_root"]) / ".agent" / "runs" / str(number)
+        self.dir = runs_dir(cfg) / str(number)
         self.file = self.dir / "state.json"
         self.s = read_json(self.file, {"number": number})
         self.cost_log = self.dir / "cost.jsonl"
@@ -80,7 +80,7 @@ class Run:
 
 
 def all_runs(cfg):
-    d = Path(cfg["_root"]) / ".agent" / "runs"
+    d = runs_dir(cfg)
     if not d.exists():
         return []
     return [Run(cfg, int(p.name)) for p in sorted(d.iterdir(), key=lambda p: p.name.zfill(9))
