@@ -73,6 +73,18 @@ class Report(unittest.TestCase):
         self.assertEqual((a["hook_calls"], a["edit_blocks"], a["stop_blocks"], a["hook_errors"]), (6, 1, 2, 1))
         self.assertEqual((b["hook_calls"], b["edit_blocks"], b["stop_blocks"], b["hook_errors"]), (0, 0, 0, 0))
 
+    def test_hook_calls_matched_by_session_when_tickets_share_a_folder(self):
+        make_run(self.runs, 7, {"status": "pr_open", "ws": "/repo", "sessions": [{"step": "implement", "id": "a"}]},
+                 [call("implement", 1.0)])
+        make_run(self.runs, 8, {"status": "pr_open", "ws": "/repo", "sessions": [{"step": "implement", "id": "b"}]},
+                 [call("implement", 1.0)])
+        hook = [{"event": "stop", "outcome": "block", "cwd": "/repo", "session": "a"},
+                {"event": "stop", "outcome": "pass", "cwd": "/repo", "session": "b"}]
+        (self.runs / "hooks.jsonl").write_text("".join(json.dumps(r) + "\n" for r in hook))
+        a, b = report.collect(self.runs)["rows"]
+        self.assertEqual((a["hook_calls"], a["stop_blocks"]), (1, 1))
+        self.assertEqual((b["hook_calls"], b["stop_blocks"]), (1, 0))
+
     def test_hook_calls_respect_since(self):
         make_run(self.runs, 7, {"status": "pr_open", "ws": "/wt/7"}, [call("implement", 1.0, ts=200)])
         hook = [{"ts": 50, "event": "stop", "outcome": "block", "cwd": "/wt/7"},

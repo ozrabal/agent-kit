@@ -26,7 +26,8 @@ failing lines. `agent-kit gates <name>` runs one; `--fix` runs formatters first.
 With hooks installed (`agent-kit hooks install`), file gates run after each edit and the gates
 run before you finish; a failure comes back as hook feedback. Fix it, don't work around it.
 Config: `file_gates` (`{name, match, cmd with {file}, timeout}`), `hooks.stop_gate`,
-`hooks.stop_max_blocks` (Stop blocks in a row before giving up). Every hook call is logged in
+`hooks.stop_max_blocks` (Stop blocks in a row before giving up), `hooks.file_gate_timeout`,
+`hooks.note_chars`, `hooks.error_window_hours`. Every hook call is logged in
 `.agent/runs/hooks.jsonl`; `agent-kit log <issue>` shows them, `agent-kit report` counts them.
 
 ## After finishing work outside the loop

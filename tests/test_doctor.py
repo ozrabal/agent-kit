@@ -163,13 +163,24 @@ class Doctor(unittest.TestCase):
         now = int(time.time())
         rows = [{"ts": now - 90000, "event": "stop", "outcome": "error", "note": "old one"},
                 {"ts": now - 60, "event": "stop", "outcome": "pass"},
-                {"ts": now - 30, "event": "post-edit", "outcome": "error", "note": "TimeoutExpired: ruff"}]
+                {"ts": now - 30, "event": "post-edit", "outcome": "error", "note": "TimeoutExpired: ruff",
+                 "cwd": "/wt/7-add"}]
         log.write_text("".join(json.dumps(r) + "\n" for r in rows))
         res = self.results(config(self.root, {}), FakeRun(HEALTHY))["hook errors"]
         self.assertTrue(res["warn"])
         self.assertIn("1 in the last 24h", res["hint"])
         self.assertIn("TimeoutExpired: ruff", res["hint"])
+        self.assertIn("/wt/7-add", res["hint"])
         self.assertNotIn("old one", res["hint"])
+
+    def test_hook_error_window_from_config(self):
+        import time
+        log = self.root / ".agent" / "runs" / "hooks.jsonl"
+        log.parent.mkdir(parents=True)
+        log.write_text(json.dumps({"ts": int(time.time()) - 7200, "event": "stop", "outcome": "error", "note": "x"}) + "\n")
+        cfg = config(self.root, {})
+        cfg["hooks"]["error_window_hours"] = 1
+        self.assertFalse(self.results(cfg, FakeRun(HEALTHY))["hook errors"]["warn"])
 
     def test_no_hook_errors(self):
         res = self.results(config(self.root, {}), FakeRun(HEALTHY))["hook errors"]

@@ -2,7 +2,7 @@
 Used by `agent-kit report` and the sandbox benchmark to compare runs."""
 from pathlib import Path
 
-from .hooks import in_worktree
+from . import hooks as hook_log
 from .llm import step_kind
 from .util import read_json, read_jsonl
 
@@ -16,13 +16,13 @@ def _gates(state):
     return "-" if not rep else ("pass" if rep.get("ok") else "FAIL")
 
 
-def hook_counts(rows, ws):
-    """Hook log rows (.agent/runs/hooks.jsonl) whose cwd is inside the ticket's worktree, counted."""
-    mine = [r for r in rows if in_worktree(r, ws)]
+def hook_counts(rows, state):
+    """The ticket run's hook log rows (.agent/runs/hooks.jsonl), counted."""
+    mine = hook_log.rows_for(rows, state)
     def n(event, outcome):
         return sum(1 for r in mine if (event is None or r.get("event") == event) and r.get("outcome") == outcome)
-    return {"hook_calls": len(mine), "edit_blocks": n("post-edit", "block"), "stop_blocks": n("stop", "block"),
-            "hook_errors": n(None, "error")}
+    return {"hook_calls": len(mine), "edit_blocks": n("post-edit", hook_log.BLOCK),
+            "stop_blocks": n("stop", hook_log.BLOCK), "hook_errors": n(None, hook_log.ERROR)}
 
 
 def collect(runs_dir, since=None):
@@ -30,7 +30,7 @@ def collect(runs_dir, since=None):
     and runs with no newer calls are left out."""
     rows = []
     runs_dir = Path(runs_dir)
-    hooks = [h for h in read_jsonl(runs_dir / "hooks.jsonl") if since is None or (h.get("ts") or 0) >= since]
+    hook_rows = [h for h in read_jsonl(runs_dir / hook_log.LOG_NAME) if since is None or (h.get("ts") or 0) >= since]
     dirs = runs_dir.iterdir() if runs_dir.is_dir() else []
     for d in sorted((p for p in dirs if p.is_dir() and p.name.isdigit()), key=lambda p: int(p.name)):
         calls = [c for c in read_jsonl(d / "cost.jsonl") if since is None or (c.get("ts") or 0) >= since]
@@ -44,7 +44,7 @@ def collect(runs_dir, since=None):
             "calls": len(calls), "fix_rounds": steps.count("fix-gates"), "review_rounds": steps.count("review"),
             "gates": _gates(state),
         }
-        row.update(hook_counts(hooks, state.get("ws")))
+        row.update(hook_counts(hook_rows, state))
         row.update({t: sum(c.get(t) or 0 for c in calls) for t in TOKENS})
         rows.append(row)
     total = {k: round(sum(r.get(k) or 0 for r in rows), 4) for k in METRICS}

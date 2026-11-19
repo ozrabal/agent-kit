@@ -119,13 +119,14 @@ def main(argv=None):
 
     if a.cmd == "log":
         from . import hooks
-        from .util import read_jsonl
+        from .util import read_json
         d = config.runs_dir(cfg) / str(a.ticket)
         logs = sorted(d.glob("*.log"), key=lambda f: f.stat().st_mtime)
         if a.step:
             logs = [f for f in logs if f.stem == a.step]
-        ws = (json.loads((d / "state.json").read_text()).get("ws") if (d / "state.json").exists() else None)
-        hook_rows = [] if a.step else [r for r in read_jsonl(hooks.log_path(cfg)) if hooks.in_worktree(r, ws)]
+        state = read_json(d / "state.json", {}) or {}
+        ws = state.get("ws")
+        hook_rows = hooks.rows_for(hooks.read_rows(cfg), state, step=a.step)
         if not logs and not hook_rows:
             die(f"no Claude logs in {d}" + (f" for step {a.step}" if a.step else ""))
         for f in logs:

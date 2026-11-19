@@ -27,7 +27,8 @@ DEFAULTS = {
     "autofix": [],
     "gates": [],
     "file_gates": [],  # {"name", "match": glob, "cmd": "... {file}", "timeout"}: run by the post-edit hook
-    "hooks": {"stop_gate": True, "stop_max_blocks": 2},
+    "hooks": {"stop_gate": True, "stop_max_blocks": 2, "file_gate_timeout": 60, "note_chars": 600,
+              "error_window_hours": 24},
     "merge": {"policy": "pause", "max_open_prs": 1, "poll_seconds": 120},
     "loop": {"max_fix_rounds": 2, "max_review_rounds": 2, "timeout_seconds": 3600},
     "models": {"implement": "sonnet", "review": "opus", "summarize": "haiku"},

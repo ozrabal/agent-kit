@@ -38,8 +38,8 @@ class Dispatch(HookTest):
     def test_no_config_does_nothing(self):
         self.assertEqual(hooks.main("stop", self.stdin(), load=lambda cwd: None), (0, ""))
 
-    def test_unknown_event_does_nothing(self):
-        self.assertEqual(hooks.main("nope", self.stdin(), load=lambda cwd: config(self.root)), (0, ""))
+    def test_unknown_event_does_not_block(self):
+        self.assertEqual(hooks.main("nope", self.stdin(), load=lambda cwd: config(self.root))[0], 0)
 
     def test_internal_error_never_blocks(self):
         def boom(cwd):
@@ -102,7 +102,7 @@ class StopGate(HookTest):
 
     def test_disabled_stop_gate_does_nothing(self):
         g = FakeGates(False)
-        self.assertEqual(self.stop(g, hooks={"stop_gate": False, "stop_max_blocks": 2}), (0, ""))
+        self.assertEqual(self.stop(g, hooks={**DEFAULTS["hooks"], "stop_gate": False}), (0, ""))
         self.assertEqual(g.calls, 0)
 
 
@@ -201,8 +201,53 @@ class HookLog(HookTest):
         self.assertEqual((b["outcome"], b["note"]), ("skip", "no file_gates"))
 
     def test_disabled_stop_gate_is_a_skip(self):
-        self.call("stop", check=FakeGates(True), hooks={"stop_gate": False, "stop_max_blocks": 2})
+        self.call("stop", check=FakeGates(True), hooks={**DEFAULTS["hooks"], "stop_gate": False})
         self.assertEqual((self.rows()[0]["outcome"], self.rows()[0]["note"]), ("skip", "hooks.stop_gate is off"))
+
+    def test_pass_logs_zero_blocks(self):
+        g = FakeGates(False, True)
+        self.call("stop", check=g)
+        self.call("stop", check=g, active=True)
+        self.assertEqual(self.rows()[-1]["blocks"], 0)
+
+    def test_note_and_file_gate_timeout_from_config(self):
+        run = FakeRun(1, "x" * 2000)
+        self.call("post-edit", run=run, file_gates=[{"name": "lint", "match": "*.py", "cmd": "lint {file}"}],
+                  hooks={"stop_gate": True, "stop_max_blocks": 2, "note_chars": 50, "file_gate_timeout": 7,
+                         "error_window_hours": 24})
+        self.assertEqual(run.calls[0]["timeout"], 7)
+        self.assertEqual(len(self.rows()[0]["note"]), 50)
+
+    def test_config_that_fails_to_load_is_logged_in_the_repo(self):
+        def broken(cwd):
+            raise ValueError("bad config.json")
+        code, msg = hooks.main("stop", self.stdin(), load=broken, agent_root=lambda cwd: self.root)
+        self.assertEqual(code, 0)
+        [row] = self.rows()
+        self.assertEqual((row["event"], row["outcome"]), ("stop", "error"))
+        self.assertIn("bad config.json", row["note"])
+
+    def test_unreadable_config_json_is_logged(self):
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        (self.root / ".agent").mkdir()
+        (self.root / ".agent" / "config.json").write_text("{broken")
+        code, msg = hooks.main("stop", self.stdin())
+        self.assertEqual(code, 0)
+        [row] = self.rows()
+        self.assertEqual(row["outcome"], "error")
+        self.assertIn("config.json", row["note"])
+
+    def test_unknown_event_in_a_configured_repo_is_logged(self):
+        hooks.main("nope", self.stdin(), load=lambda cwd: config(self.root))
+        self.assertEqual(self.rows()[0]["outcome"], "error")
+        self.assertIn("unknown event", self.rows()[0]["note"])
+
+    def test_failed_log_write_is_reported_on_stderr(self):
+        (self.root / ".agent").mkdir()
+        (self.root / ".agent" / "runs").write_text("not a folder")
+        code, msg = self.call("stop", check=FakeGates(True))
+        self.assertEqual(code, 0)
+        self.assertIn("could not write the hook log", msg)
 
     def test_internal_error_is_logged(self):
         def boom(cfg, cwd):
@@ -237,6 +282,22 @@ class RenderRow(unittest.TestCase):
     def test_paths_relative_to_cwd(self):
         row = {"event": "post-edit", "outcome": "skip", "secs": 0, "file": "/ws/a.md", "note": "x"}
         self.assertEqual(hooks.render_row(row, cwd="/ws"), "hook post-edit a.md: SKIP (0s) | x")
+
+
+def row(**kw):
+    return {"event": "stop", "outcome": "pass", **kw}
+
+
+class RowsFor(unittest.TestCase):
+    def test_by_session_then_step(self):
+        state = {"ws": "/repo", "sessions": [{"step": "implement", "id": "a"}, {"step": "fix-gates-1", "id": "b"}]}
+        rows = [row(session="a", cwd="/repo"), row(session="b", cwd="/repo"), row(session="z", cwd="/repo")]
+        self.assertEqual([r["session"] for r in hooks.rows_for(rows, state)], ["a", "b"])
+        self.assertEqual([r["session"] for r in hooks.rows_for(rows, state, step="fix-gates-1")], ["b"])
+
+    def test_old_runs_without_sessions_match_by_worktree(self):
+        rows = [row(session="a", cwd="/wt/7"), row(session="b", cwd="/wt/7/sub"), row(session="c", cwd="/wt/70")]
+        self.assertEqual([r["session"] for r in hooks.rows_for(rows, {"ws": "/wt/7"})], ["a", "b"])
 
 
 FOREIGN = {"permissions": {"allow": ["Bash(ls *)"]}, "hooks": {

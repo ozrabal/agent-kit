@@ -217,7 +217,8 @@ class Loop:
                 allow=self._allow(), budget=c["budget_usd"]["fix" if resume else "implement"], resume=resume,
                 persist=True, timeout=c["loop"]["timeout_seconds"], cost_log=run.cost_log,
                 stream_log=run.dir / f"{step.replace(':', '-')}.log")
-        run.set(session=sid or resume, impl=res)
+        sessions = (run["sessions"] or []) + [{"step": step.replace(":", "-"), "id": sid or resume}]
+        run.set(session=sid or resume, sessions=sessions, impl=res)  # sessions: to match hook log rows
         return res
 
     def _review(self, run, ws, issue):

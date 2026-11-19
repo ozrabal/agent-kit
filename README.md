@@ -94,10 +94,15 @@ Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
 - `hooks.stop_gate` (default `true`): autofix + `gates` run when Claude wants to finish; failures
   send it back to fix them, at most `hooks.stop_max_blocks` (default `2`) times in a row.
   The loop still runs the gates after implement as a safety net; `state.json` records `fix_rounds`.
-- Every hook call is logged to `.agent/runs/hooks.jsonl` (event, file, outcome
-  `pass|block|skip|give_up|error`, gates with times, a short note). `agent-kit run` prints each one
-  live, `agent-kit log <n>` lists them under `## hooks`, `agent-kit report` counts them per ticket
-  (`hooks`, `edit_blk`, `stop_blk`, `hook_err`) and `doctor` warns about hook errors in the last 24h.
+- `hooks.file_gate_timeout` (default `60` s): default timeout of a file gate without its own.
+- Every hook call in a repo with `.agent/` is logged to `.agent/runs/hooks.jsonl` (event, session,
+  file, outcome `pass|block|skip|give_up|error`, gates with times, and a note of up to
+  `hooks.note_chars` (default `600`) chars). This includes a config that fails to load. The log is
+  the only record of what a post-edit hook told Claude: that feedback is not in the session log.
+  `agent-kit run` prints each call live during implement and fix sessions (review edits nothing),
+  `agent-kit log <n> [step]` lists a ticket's calls under `## hooks` (matched by Claude session id),
+  `agent-kit report` counts them per ticket (`hooks`, `edit_blk`, `stop_blk`, `hook_err`) and
+  `doctor` warns about hook errors in the last `hooks.error_window_hours` (default `24`).
 - Hooks do nothing in repos without `.agent/config.json`. Gates in hooks cost no tokens; Claude
   reads the compacted failure output in its session.
 

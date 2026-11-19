@@ -7,7 +7,7 @@ import time
 
 from . import hooks, kb
 from .config import DEFAULTS, config_path
-from .util import read_json, read_jsonl, sh
+from .util import read_json, sh
 
 TOOLS = {
     "git": "install git",
@@ -117,12 +117,14 @@ def check_hooks(ctx):
 
 def check_hook_errors(ctx):
     """Hooks never fail a session; their internal errors only show up in .agent/runs/hooks.jsonl."""
-    since = time.time() - 24 * 3600
-    errs = [r for r in read_jsonl(hooks.log_path(ctx.cfg)) if r.get("outcome") == "error" and (r.get("ts") or 0) >= since]
+    hours = ctx.cfg["hooks"]["error_window_hours"]
+    since = time.time() - hours * 3600
+    errs = [r for r in hooks.read_rows(ctx.cfg) if r.get("outcome") == hooks.ERROR and (r.get("ts") or 0) >= since]
     if not errs:
         return [result("hook errors", True)]
     last = errs[-1]
-    return [warning("hook errors", f"{len(errs)} in the last 24h; latest ({last.get('event')}): {last.get('note')}")]
+    return [warning("hook errors", f"{len(errs)} in the last {hours}h; latest ({last.get('event')} in "
+                                   f"{last.get('cwd') or '?'}): {last.get('note')}")]
 
 
 CHECKS = [check_tools, check_python, check_gh_auth, check_config, check_labels, check_base_branch,
