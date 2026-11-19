@@ -57,6 +57,12 @@ class Report(unittest.TestCase):
         self.assertEqual(rep["rows"][0]["key"], "#2")
         self.assertEqual(rep["rows"][0]["gates"], "-")
 
+    def test_broken_cost_line_is_skipped(self):
+        make_run(self.runs, 5, {}, [call("implement", 1.0)])
+        with (self.runs / "5" / "cost.jsonl").open("a") as f:
+            f.write("{not json\n")
+        self.assertEqual(report.collect(self.runs)["total"]["usd"], 1.0)
+
     def test_missing_runs_dir_is_empty(self):
         rep = report.collect(self.runs / "nope")
         self.assertEqual(rep["rows"], [])

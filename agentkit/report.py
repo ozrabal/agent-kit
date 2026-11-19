@@ -2,13 +2,11 @@
 Used by `agent-kit report` and the sandbox benchmark to compare runs."""
 from pathlib import Path
 
+from .llm import step_kind
 from .util import read_json, read_jsonl
 
 TOKENS = ("in", "cache_r", "out")
-
-
-def _step(row):
-    return (row.get("step") or "").split(":")[0]
+METRICS = ("usd", "calls", "fix_rounds", "review_rounds", *TOKENS)  # summed in "total", compared by the benchmark
 
 
 def _gates(state):
@@ -27,7 +25,7 @@ def collect(runs_dir, since=None):
         if since is not None and not calls:
             continue
         state = read_json(d / "state.json", {}) or {}
-        steps = [_step(c) for c in calls]
+        steps = [step_kind(c) for c in calls]
         row = {
             "ticket": int(d.name), "key": state.get("key") or f"#{d.name}", "title": state.get("title") or "",
             "status": state.get("status") or "-", "usd": round(sum(c.get("usd") or 0 for c in calls), 4),
@@ -36,8 +34,7 @@ def collect(runs_dir, since=None):
         }
         row.update({t: sum(c.get(t) or 0 for c in calls) for t in TOKENS})
         rows.append(row)
-    sums = ("usd", "calls", "fix_rounds", "review_rounds", *TOKENS)
-    total = {k: round(sum(r[k] for r in rows), 4) for k in sums}
+    total = {k: round(sum(r[k] for r in rows), 4) for k in METRICS}
     return {"rows": rows, "total": total}
 
 

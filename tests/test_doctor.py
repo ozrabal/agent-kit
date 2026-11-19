@@ -72,10 +72,11 @@ class Doctor(unittest.TestCase):
         self.assertFalse(res["config"]["ok"])
         self.assertIn("agent-kit init", res["config"]["hint"])
 
-    def test_unknown_config_keys_named_but_free_maps_allowed(self):
+    def test_unknown_config_keys_warn_but_free_maps_allowed(self):
         user = {"loop": {"max_fix_round": 3}, "modles": {}, "workspace": {"env": {"ANY_NAME": "1"}}}
         res = self.results(config(self.root, user), FakeRun(HEALTHY))
-        self.assertFalse(res["config"]["ok"])
+        self.assertTrue(res["config"]["ok"])
+        self.assertTrue(res["config"]["warn"])
         self.assertIn("loop.max_fix_round", res["config"]["hint"])
         self.assertIn("modles", res["config"]["hint"])
         self.assertNotIn("ANY_NAME", res["config"]["hint"])
@@ -109,14 +110,18 @@ class Doctor(unittest.TestCase):
 
     def test_failing_gate_named(self):
         report = {"ok": False, "results": [{"name": "lint", "ok": True}, {"name": "test", "ok": False}]}
-        res = self.results(config(self.root, {}), FakeRun(HEALTHY), run_gates=lambda: report)
+        cfg = config(self.root, {})
+        cfg["gates"] = ["make lint", "make test"]
+        res = self.results(cfg, FakeRun(HEALTHY), run_gates=lambda: report)
         self.assertFalse(res["gates"]["ok"])
         self.assertIn("test", res["gates"]["hint"])
         self.assertNotIn("lint", res["gates"]["hint"])
 
-    def test_gates_skipped_when_not_requested(self):
-        res = self.results(config(self.root, {}), FakeRun(HEALTHY), run_gates=None)
-        self.assertNotIn("gates", res)
+    def test_no_gates_still_checks_they_are_configured(self):
+        cfg = config(self.root, {})
+        self.assertFalse(self.results(cfg, FakeRun(HEALTHY), run_gates=None)["gates"]["ok"])
+        cfg["gates"] = ["make test"]
+        self.assertTrue(self.results(cfg, FakeRun(HEALTHY), run_gates=None)["gates"]["ok"])
 
     def test_knowledge_base(self):
         cfg = config(self.root, {})
@@ -126,10 +131,12 @@ class Doctor(unittest.TestCase):
         self.assertTrue(self.results(cfg, FakeRun(HEALTHY))["knowledge base"]["ok"])
 
     def test_render_and_ok(self):
-        rs = [doctor.result("git", True), doctor.result("gh auth", False, "run `gh auth login`")]
-        self.assertEqual(doctor.render(rs), "OK   git\nFAIL gh auth -> run `gh auth login`")
+        rs = [doctor.result("git", True), doctor.warning("config", "unknown keys (typo?): x"),
+              doctor.result("gh auth", False, "run `gh auth login`")]
+        self.assertEqual(doctor.render(rs), "OK   git\nWARN config -> unknown keys (typo?): x\n"
+                                            "FAIL gh auth -> run `gh auth login`")
         self.assertFalse(doctor.all_ok(rs))
-        self.assertTrue(doctor.all_ok(rs[:1]))
+        self.assertTrue(doctor.all_ok(rs[:2]))
 
 
 if __name__ == "__main__":

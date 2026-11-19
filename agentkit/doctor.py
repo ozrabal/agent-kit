@@ -1,11 +1,11 @@
 """Setup checks before a run: tools, auth, config, tracker labels, base branch, gates, knowledge base.
-No LLM. Each check returns results {name, ok, hint}; the hint says how to fix a failure."""
+No LLM. Each check returns results {name, ok, warn, hint}; the hint says how to fix a failure.
+A warning (ok but worth a look) does not fail doctor."""
 import json
 import sys
-from pathlib import Path
 
 from . import kb
-from .config import DEFAULTS
+from .config import DEFAULTS, config_path
 from .util import read_json, sh
 
 TOOLS = {
@@ -16,10 +16,14 @@ TOOLS = {
 
 
 def result(name, ok, hint=""):
-    return {"name": name, "ok": bool(ok), "hint": "" if ok else hint}
+    return {"name": name, "ok": bool(ok), "warn": False, "hint": "" if ok else hint}
 
 
-def _runs(run, cmd, cwd=None):
+def warning(name, hint):
+    return {"name": name, "ok": True, "warn": True, "hint": hint}
+
+
+def _succeeds(run, cmd, cwd=None):
     """True when the command exits 0; False when it fails or the binary is missing."""
     try:
         return run(cmd, cwd=cwd, check=False).returncode == 0
@@ -28,7 +32,7 @@ def _runs(run, cmd, cwd=None):
 
 
 def check_tools(ctx):
-    return [result(t, _runs(ctx.run, [t, "--version"]), hint) for t, hint in TOOLS.items()]
+    return [result(t, _succeeds(ctx.run, [t, "--version"]), hint) for t, hint in TOOLS.items()]
 
 
 def check_python(ctx):
@@ -36,7 +40,7 @@ def check_python(ctx):
 
 
 def check_gh_auth(ctx):
-    return [result("gh auth", _runs(ctx.run, ["gh", "auth", "status"]), "run `gh auth login`")]
+    return [result("gh auth", _succeeds(ctx.run, ["gh", "auth", "status"]), "run `gh auth login`")]
 
 
 def unknown_keys(user, defaults, prefix=""):
@@ -53,14 +57,14 @@ def unknown_keys(user, defaults, prefix=""):
 
 
 def check_config(ctx):
-    path = Path(ctx.cfg["_root"]) / ".agent" / "config.json"
+    path = config_path(ctx.cfg["_root"])
     if not path.exists():
         return [result("config", False, "run `agent-kit init`")]
     user = read_json(path)
     if not isinstance(user, dict):
         return [result("config", False, f"{path} is not a JSON object")]
     bad = unknown_keys(user, DEFAULTS)
-    return [result("config", not bad, "unknown keys (typo?): " + ", ".join(bad))]
+    return [warning("config", "unknown keys (typo?): " + ", ".join(bad)) if bad else result("config", True)]
 
 
 def check_labels(ctx):
@@ -85,11 +89,11 @@ def check_base_branch(ctx):
 
 
 def check_gates(ctx):
-    if ctx.run_gates is None:
-        return []
-    rep = ctx.run_gates()
-    if not rep["results"]:
+    if not ctx.cfg["gates"]:
         return [result("gates", False, "no gates configured: add lint/test commands to `gates` in .agent/config.json")]
+    if ctx.run_gates is None:
+        return [result("gates", True)]
+    rep = ctx.run_gates()
     failed = [r["name"] for r in rep["results"] if not r["ok"]]
     return [result("gates", not failed, "failing on this checkout: " + ", ".join(failed)
                    + " (run `agent-kit gates` for details)")]
@@ -100,7 +104,6 @@ def check_knowledge_base(ctx):
     return [result("knowledge base", ok, "run `agent-kit kb update`")]
 
 
-# Later features (hooks) append their checks here.
 CHECKS = [check_tools, check_python, check_gh_auth, check_config, check_labels, check_base_branch,
           check_gates, check_knowledge_base]
 
@@ -121,4 +124,8 @@ def all_ok(results):
 
 
 def render(results):
-    return "\n".join(f"OK   {r['name']}" if r["ok"] else f"FAIL {r['name']} -> {r['hint']}" for r in results)
+    def line(r):
+        if not r["ok"]:
+            return f"FAIL {r['name']} -> {r['hint']}"
+        return f"WARN {r['name']} -> {r['hint']}" if r["warn"] else f"OK   {r['name']}"
+    return "\n".join(map(line, results))

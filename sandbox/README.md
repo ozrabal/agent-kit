@@ -33,7 +33,7 @@ python3 sandbox/bench.py --compare sandbox/bench/a.json sandbox/bench/b.json
 ```
 
 It costs money (about $1-2 per ticket). Results go to `sandbox/bench/<date>-<sha>.json` (not committed).
-Run it on `main` and on your branch, then put the `--compare` output in the PR. Tickets are matched
+Run it on `main` and on your branch, then compare the two files. Tickets are matched
 by title, since a reset gives them new numbers.
 
 ## Tickets

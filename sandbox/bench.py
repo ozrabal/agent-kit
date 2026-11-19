@@ -17,8 +17,10 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from agentkit.report import METRICS  # noqa: E402
+
 OUT = HERE / "bench"
-METRICS = ("usd", "calls", "fix_rounds", "review_rounds", "in", "cache_r", "out")
 DEFAULT_TICKETS = "1,4,5"  # normal implementation probes; 2 and 3 wait for merges, 6 is not ready
 
 
@@ -53,9 +55,13 @@ def format_compare(rows):
     return "\n".join(lines)
 
 
-def _run(cmd, cwd=None):
+def _run(cmd, cwd=None, must=False):
+    """Run and echo a command. must=True exits with its error output when it fails."""
     print("$ " + " ".join(cmd), flush=True)
-    return subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+    r = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+    if must and r.returncode != 0:
+        sys.exit(f"failed ({r.returncode}): {' '.join(cmd)}\n{(r.stderr or r.stdout).strip()}")
+    return r
 
 
 def run_bench(tickets):
@@ -63,20 +69,20 @@ def run_bench(tickets):
     from reset import sandbox_dir  # noqa: E402
 
     titles = [json.loads((HERE / "issues.json").read_text())[i - 1]["title"] for i in tickets]
-    if _run([sys.executable, str(HERE / "reset.py")]).returncode != 0:
-        sys.exit("reset failed")
+    _run([sys.executable, str(HERE / "reset.py")], must=True)
     local = sandbox_dir(None) / "agent-kit-sandbox"
-    _run(["agent-kit", "kb", "update", "--no-llm"], cwd=local)
-    listed = _run(["gh", "issue", "list", "--state", "open", "--json", "number,title", "--limit", "100"], cwd=local)
-    numbers = {i["title"]: i["number"] for i in json.loads(listed.stdout or "[]")}
+    _run(["agent-kit", "kb", "update", "--no-llm"], cwd=local, must=True)
+    listed = _run(["gh", "issue", "list", "--state", "open", "--json", "number,title", "--limit", "100"],
+                  cwd=local, must=True)
+    numbers = {i["title"]: i["number"] for i in json.loads(listed.stdout)}
     start = int(time.time())
     for t in titles:
         if t not in numbers:
             sys.exit(f"ticket not found in the sandbox: {t}")
         r = _run(["agent-kit", "run", "--ticket", str(numbers[t])], cwd=local)
         print(f"  {t}: exit {r.returncode}")  # a failed ticket is a result too; keep going
-    rep = _run(["agent-kit", "report", "--json", "--since", str(start)], cwd=local)
-    sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=HERE, text=True, capture_output=True).stdout.strip()
+    rep = _run(["agent-kit", "report", "--json", "--since", str(start)], cwd=local, must=True)
+    sha = _run(["git", "rev-parse", "--short", "HEAD"], cwd=HERE).stdout.strip()
     OUT.mkdir(exist_ok=True)
     path = OUT / f"{time.strftime('%Y-%m-%d')}-{sha or 'nogit'}.json"
     path.write_text(rep.stdout)

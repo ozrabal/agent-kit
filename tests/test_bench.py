@@ -18,8 +18,7 @@ def row(title, ticket, usd, fix=0, review=1, tin=100, cache_r=0, out=10):
 
 
 def rep(*rows):
-    keys = ("usd", "calls", "fix_rounds", "review_rounds", "in", "cache_r", "out")
-    return {"rows": list(rows), "total": {k: round(sum(r[k] for r in rows), 4) for k in keys}}
+    return {"rows": list(rows), "total": {k: round(sum(r[k] for r in rows), 4) for k in bench.METRICS}}
 
 
 class Compare(unittest.TestCase):

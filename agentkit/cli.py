@@ -74,7 +74,7 @@ def main(argv=None):
     if a.cmd == "kb":
         if a.kbcmd == "update":
             kb.update(cfg, here, full=a.full, use_llm=not a.no_llm,
-                      cost_log=Path(cfg["_root"]) / ".agent" / "runs" / "kb-cost.jsonl")
+                      cost_log=config.runs_dir(cfg) / "kb-cost.jsonl")
         elif a.kbcmd == "stats":
             print(json.dumps(kb.stats(cfg, here), indent=2))
         else:
@@ -90,12 +90,12 @@ def main(argv=None):
 
     if a.cmd == "report":
         from . import report
-        rep = report.collect(Path(cfg["_root"]) / ".agent" / "runs", since=a.since)
+        rep = report.collect(config.runs_dir(cfg), since=a.since)
         print(json.dumps(rep, indent=2) if a.json else report.render(rep))
         return 0
 
     if a.cmd == "log":
-        d = Path(cfg["_root"]) / ".agent" / "runs" / str(a.ticket)
+        d = config.runs_dir(cfg) / str(a.ticket)
         logs = sorted(d.glob("*.log"), key=lambda f: f.stat().st_mtime)
         if a.step:
             logs = [f for f in logs if f.stem == a.step]

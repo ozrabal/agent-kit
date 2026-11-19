@@ -71,7 +71,7 @@ If gates or review still fail after the rounds, the loop pushes a **draft** PR w
 - Every call is logged with cost: `.agent/runs/<n>/cost.jsonl`; `agent-kit status` shows totals and
   `agent-kit report` breaks them down per ticket (tokens, fix and review rounds).
 - `python3 sandbox/bench.py` runs fixed sandbox tickets and saves that report; `--compare a.json b.json`
-  shows what a change did to cost, tokens and rounds. PRs that change prompts or the loop include it.
+  shows what a change did to cost, tokens and rounds.
 - Implement, fix and review stream their sessions to `.agent/runs/<n>/<step>.log` and print each
   tool call while they run. Same tokens as before; only the output format changes.
 
