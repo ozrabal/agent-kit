@@ -23,6 +23,11 @@ those files; search further only when they are not enough. `.knowledge/tree.md` 
 `agent-kit gates` runs the project's configured lint/type/test commands and prints only the
 failing lines. `agent-kit gates <name>` runs one; `--fix` runs formatters first.
 
+With hooks installed (`agent-kit hooks install`), file gates run after each edit and the gates
+run before you finish; a failure comes back as hook feedback. Fix it, don't work around it.
+Config: `file_gates` (`{name, match, cmd with {file}, timeout}`), `hooks.stop_gate`,
+`hooks.stop_max_blocks` (Stop blocks in a row before giving up).
+
 ## After finishing work outside the loop
 
 - `agent-kit kb update` (incremental; only changed files are re-parsed, LLM summaries only for

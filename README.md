@@ -29,6 +29,7 @@ agent-kit init [--claude-md]   # detect stack -> .agent/config.json, seed .knowl
 agent-kit kb update            # build the knowledge base (first run: ~1 min, cents)
 agent-kit doctor [--no-gates]  # check tools, gh auth, config keys, labels, base branch, gates, KB
 agent-kit status               # ready / blocked tickets
+agent-kit hooks install [--user] # Claude Code hooks: file gates after each edit, gates before stopping
 agent-kit report [--json]      # cost, tokens, fix and review rounds per ticket run
 agent-kit log 12               # what Claude did on ticket #12: tool calls, errors, cost
 agent-kit run --dry-run        # show the prompt for the next ticket, change nothing
@@ -36,7 +37,8 @@ agent-kit run                  # do the next unblocked ticket, open a PR, pause 
 agent-kit run --wait           # keep going: poll for merges (no LLM), then the next ticket
 ```
 
-Commit `.agent/config.json` and `.knowledge/`. `.agent/runs/` and `.knowledge/index.sqlite`
+Commit `.agent/config.json`, `.knowledge/` and `.claude/settings.json` (the loop's worktrees only
+see committed hooks). `.agent/runs/` and `.knowledge/index.sqlite`
 are local.
 
 ## One ticket
@@ -72,6 +74,8 @@ If gates or review still fail after the rounds, the loop pushes a **draft** PR w
   `agent-kit report` breaks them down per ticket (tokens, fix and review rounds).
 - `python3 sandbox/bench.py` runs fixed sandbox tickets and saves that report; `--compare a.json b.json`
   shows what a change did to cost, tokens and rounds.
+- Hooks catch lint and gate failures inside the implement session, so fewer resumed fix rounds
+  with a new prompt are needed.
 - Implement, fix and review stream their sessions to `.agent/runs/<n>/<step>.log` and print each
   tool call while they run. Same tokens as before; only the output format changes.
 
@@ -79,7 +83,19 @@ If gates or review still fail after the rounds, the loop pushes a **draft** PR w
 
 Kit defaults live in `agentkit/config.py`; the project file overrides any key. Most useful:
 `gates`, `autofix`, `workspace.setup`, `workspace.env`, `tracker.labels`, `merge.max_open_prs`,
-`models`, `budget_usd`, `loop.*`, `pr.sections`, `implement.allow_bash`, `kb.exclude`.
+`models`, `budget_usd`, `loop.*`, `pr.sections`, `implement.allow_bash`, `kb.exclude`, `file_gates`,
+`hooks.*`.
+
+Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
+
+- `file_gates`: run after Claude edits a matching file, e.g.
+  `{"name": "ruff", "match": "*.py", "cmd": "ruff check {file}", "timeout": 60}`. `{file}` is the
+  path relative to the repo. A failure is shown to Claude in the same turn. Default `[]`.
+- `hooks.stop_gate` (default `true`): autofix + `gates` run when Claude wants to finish; failures
+  send it back to fix them, at most `hooks.stop_max_blocks` (default `2`) times in a row.
+  The loop still runs the gates after implement as a safety net; `state.json` records `fix_rounds`.
+- Hooks do nothing in repos without `.agent/config.json`. Gates in hooks cost no tokens; Claude
+  reads the compacted failure output in its session.
 
 ## Extending
 

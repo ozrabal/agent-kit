@@ -37,6 +37,13 @@ def main(argv=None):
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--since", type=int, help="only LLM calls at or after this unix timestamp")
 
+    p = sub.add_parser("hooks", help="install Claude Code hooks: file gates after edits, gates before stopping")
+    p.add_argument("action", choices=["install", "uninstall"])
+    p.add_argument("--user", action="store_true", help="~/.claude/settings.json instead of the repo's")
+
+    p = sub.add_parser("hook")  # called by Claude Code with the hook JSON on stdin; not for people
+    p.add_argument("event")
+
     p = sub.add_parser("gates", help="run quality gates; prints only failures")
     p.add_argument("names", nargs="*")
     p.add_argument("--fix", action="store_true", help="run autofix commands first")
@@ -50,7 +57,14 @@ def main(argv=None):
     q.add_argument("query", nargs="+", help="task text, or #<issue number>")
     kbs.add_parser("stats")
 
+    sub.metavar = "{" + ",".join(c for c in sub.choices if c != "hook") + "}"  # `hook` is for Claude Code only
     a = ap.parse_args(argv)
+    if a.cmd == "hook":
+        from . import hooks
+        code, msg = hooks.main(a.event, sys.stdin.read())
+        if msg:
+            print(msg, file=sys.stderr)
+        return code
     if a.cmd == "init":
         from .init import init
         return init(force=a.force, claude_md=a.claude_md)
@@ -63,6 +77,15 @@ def main(argv=None):
         res = doctor.check(cfg, run_gates=None if a.no_gates else (lambda: gates.run(cfg, here)))
         print(doctor.render(res))
         return 0 if doctor.all_ok(res) else 1
+
+    if a.cmd == "hooks":
+        from . import hooks
+        path = hooks.settings_path(None if a.user else main_root())
+        if a.action == "install":
+            hooks.install(path)
+        else:
+            hooks.uninstall(path)
+        return 0
 
     if a.cmd == "gates":
         if a.fix:

@@ -171,7 +171,7 @@ class Loop:
                 sh(["git", "worktree", "add", *args], cwd=self.root)
                 for cmd in w["setup"]:
                     log(f"setup: {cmd}")
-                    sh(fmt(cmd, self.cfg), cwd=ws, env=gates._env(self.cfg), timeout=1800)
+                    sh(fmt(cmd, self.cfg), cwd=ws, env=gates.env(self.cfg), timeout=1800)
         else:
             ws = self.root
             if out(["git", "status", "--porcelain"], cwd=ws):
@@ -291,11 +291,13 @@ class Loop:
     def _quality_rounds(self, run, ws, issue):
         c, key = self.cfg, issue["key"]
         review_round = 0
+        run.set(fix_rounds=run["fix_rounds"] or 0)
         while True:
             rep = self._gates(ws)
             fix_round = 0
             while not rep["ok"] and fix_round < c["loop"]["max_fix_rounds"]:
                 fix_round += 1
+                run.set(fix_rounds=run["fix_rounds"] + 1)
                 details = gates.render({"results": [r for r in rep["results"] if not r["ok"]]})
                 self._impl(run, ws, prompt("fix", key=key, reason="These gates fail:", details=details),
                            f"fix-gates:{fix_round}", resume=run["session"])

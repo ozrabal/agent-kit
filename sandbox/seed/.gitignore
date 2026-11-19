@@ -4,4 +4,5 @@ todo.json
 
 # agent-kit
 .agent/runs/
+.agent/hook-state.json
 .knowledge/index.sqlite

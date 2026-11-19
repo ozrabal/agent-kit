@@ -3,7 +3,8 @@
 A disposable private GitHub repo for trying agent-kit end to end without touching real projects.
 
 - `seed/`: a tiny Python todo app (stdlib only) with `.agent/config.json` tuned for testing:
-  low budgets, one fix and review round, a single `unittest` gate, no LLM file summaries.
+  low budgets, one fix and review round, a single `unittest` gate, no LLM file summaries,
+  a `py_compile` file gate and the agent-kit hooks committed in `.claude/settings.json`.
 - `issues.json`: tickets, each with a `probe` saying which loop behavior it tests.
   `{#n}` in a body means "the issue created from ticket n".
 - `reset.py`: rebuilds everything. Safe to run any time; only touches a repo whose name

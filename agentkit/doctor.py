@@ -4,7 +4,7 @@ A warning (ok but worth a look) does not fail doctor."""
 import json
 import sys
 
-from . import kb
+from . import hooks, kb
 from .config import DEFAULTS, config_path
 from .util import read_json, sh
 
@@ -104,18 +104,29 @@ def check_knowledge_base(ctx):
     return [result("knowledge base", ok, "run `agent-kit kb update`")]
 
 
+def check_hooks(ctx):
+    if not ctx.cfg["hooks"]["stop_gate"]:
+        return []
+    paths = [hooks.settings_path(ctx.cfg["_root"]), ctx.user_settings]
+    if any(hooks.installed(read_json(p, {})) for p in paths):
+        return [result("hooks", True)]
+    return [warning("hooks", "hooks.stop_gate is on but the hooks are not installed: run "
+                    "`agent-kit hooks install` and commit .claude/settings.json")]
+
+
 CHECKS = [check_tools, check_python, check_gh_auth, check_config, check_labels, check_base_branch,
-          check_gates, check_knowledge_base]
+          check_gates, check_knowledge_base, check_hooks]
 
 
 class Ctx:
-    def __init__(self, cfg, run, run_gates):
-        self.cfg, self.run, self.run_gates = cfg, run, run_gates
+    def __init__(self, cfg, run, run_gates, user_settings):
+        self.cfg, self.run, self.run_gates, self.user_settings = cfg, run, run_gates, user_settings
 
 
-def check(cfg, run=sh, run_gates=None):
-    """Run every check in CHECKS. run_gates: callable returning a gates report, or None to skip gates."""
-    ctx = Ctx(cfg, run, run_gates)
+def check(cfg, run=sh, run_gates=None, user_settings=None):
+    """Run every check in CHECKS. run_gates: callable returning a gates report, or None to skip gates.
+    user_settings: the user's Claude settings.json (default ~/.claude/settings.json)."""
+    ctx = Ctx(cfg, run, run_gates, user_settings or hooks.settings_path())
     return [r for c in CHECKS for r in c(ctx)]
 
 

@@ -26,6 +26,8 @@ DEFAULTS = {
     },
     "autofix": [],
     "gates": [],
+    "file_gates": [],  # {"name", "match": glob, "cmd": "... {file}", "timeout"}: run by the post-edit hook
+    "hooks": {"stop_gate": True, "stop_max_blocks": 2},
     "merge": {"policy": "pause", "max_open_prs": 1, "poll_seconds": 120},
     "loop": {"max_fix_rounds": 2, "max_review_rounds": 2, "timeout_seconds": 3600},
     "models": {"implement": "sonnet", "review": "opus", "summarize": "haiku"},
@@ -79,6 +81,11 @@ def config_path(root):
 def runs_dir(cfg):
     """Local run state: .agent/runs/<issue>/ plus kb-cost.jsonl."""
     return Path(cfg["_root"]) / ".agent" / "runs"
+
+
+def hook_state_path(cfg):
+    """Stop-hook block counters per Claude session (local, gitignored)."""
+    return Path(cfg["_root"]) / ".agent" / "hook-state.json"
 
 
 def load(cwd=None):

@@ -101,7 +101,7 @@ def init(force=False, claude_md=False):
         print(json.dumps({k: cfg[k] for k in ("gates", "autofix", "workspace")}, indent=2))
     gi = root / ".gitignore"
     lines = gi.read_text().splitlines() if gi.exists() else []
-    want = [".agent/runs/", ".knowledge/index.sqlite"]
+    want = [".agent/runs/", ".agent/hook-state.json", ".knowledge/index.sqlite"]
     missing = [w for w in want if w not in lines]
     if missing:
         gi.write_text("\n".join(lines + ["", "# agent-kit", *missing]).lstrip("\n") + "\n")
