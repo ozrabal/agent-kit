@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from string import Template
 
-from . import gates, kb, llm
+from . import gates, hooks, kb, llm
 from .config import READ_ONLY_BASH, fmt, runs_dir
 from .tracker import make
 from .util import KIT_DIR, clip, log, out, read_json, sh, slug, write_json
@@ -171,7 +171,7 @@ class Loop:
                 sh(["git", "worktree", "add", *args], cwd=self.root)
                 for cmd in w["setup"]:
                     log(f"setup: {cmd}")
-                    sh(fmt(cmd, self.cfg), cwd=ws, env=gates._env(self.cfg), timeout=1800)
+                    sh(fmt(cmd, self.cfg), cwd=ws, env=gates.env(self.cfg), timeout=1800)
         else:
             ws = self.root
             if out(["git", "status", "--porcelain"], cwd=ws):
@@ -210,13 +210,15 @@ class Loop:
 
     def _impl(self, run, ws, text, step, resume=None):
         c = self.cfg
-        res, sid = llm.claude(
-            text, cwd=ws, step=step, model=c["models"]["implement"], effort=c["effort"]["implement"],
-            schema=IMPL_SCHEMA, tools=c["implement"]["tools"], permission_mode=c["implement"]["permission_mode"],
-            allow=self._allow(), budget=c["budget_usd"]["fix" if resume else "implement"], resume=resume,
-            persist=True, timeout=c["loop"]["timeout_seconds"], cost_log=run.cost_log,
-            stream_log=run.dir / f"{step.replace(':', '-')}.log")
-        run.set(session=sid or resume, impl=res)
+        with hooks.watch(c, ws, step):  # print the session's hook calls live
+            res, sid = llm.claude(
+                text, cwd=ws, step=step, model=c["models"]["implement"], effort=c["effort"]["implement"],
+                schema=IMPL_SCHEMA, tools=c["implement"]["tools"], permission_mode=c["implement"]["permission_mode"],
+                allow=self._allow(), budget=c["budget_usd"]["fix" if resume else "implement"], resume=resume,
+                persist=True, timeout=c["loop"]["timeout_seconds"], cost_log=run.cost_log,
+                stream_log=run.dir / f"{step.replace(':', '-')}.log")
+        sessions = (run["sessions"] or []) + [{"step": step.replace(":", "-"), "id": sid or resume}]
+        run.set(session=sid or resume, sessions=sessions, impl=res)  # sessions: to match hook log rows
         return res
 
     def _review(self, run, ws, issue):
@@ -291,11 +293,13 @@ class Loop:
     def _quality_rounds(self, run, ws, issue):
         c, key = self.cfg, issue["key"]
         review_round = 0
+        run.set(fix_rounds=run["fix_rounds"] or 0)
         while True:
             rep = self._gates(ws)
             fix_round = 0
             while not rep["ok"] and fix_round < c["loop"]["max_fix_rounds"]:
                 fix_round += 1
+                run.set(fix_rounds=run["fix_rounds"] + 1)
                 details = gates.render({"results": [r for r in rep["results"] if not r["ok"]]})
                 self._impl(run, ws, prompt("fix", key=key, reason="These gates fail:", details=details),
                            f"fix-gates:{fix_round}", resume=run["session"])

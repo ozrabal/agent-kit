@@ -37,6 +37,13 @@ def main(argv=None):
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--since", type=int, help="only LLM calls at or after this unix timestamp")
 
+    p = sub.add_parser("hooks", help="install Claude Code hooks: file gates after edits, gates before stopping")
+    p.add_argument("action", choices=["install", "uninstall"])
+    p.add_argument("--user", action="store_true", help="~/.claude/settings.json instead of the repo's")
+
+    p = sub.add_parser("hook")  # called by Claude Code with the hook JSON on stdin; not for people
+    p.add_argument("event")
+
     p = sub.add_parser("gates", help="run quality gates; prints only failures")
     p.add_argument("names", nargs="*")
     p.add_argument("--fix", action="store_true", help="run autofix commands first")
@@ -50,7 +57,14 @@ def main(argv=None):
     q.add_argument("query", nargs="+", help="task text, or #<issue number>")
     kbs.add_parser("stats")
 
+    sub.metavar = "{" + ",".join(c for c in sub.choices if c != "hook") + "}"  # `hook` is for Claude Code only
     a = ap.parse_args(argv)
+    if a.cmd == "hook":
+        from . import hooks
+        code, msg = hooks.main(a.event, sys.stdin.read())
+        if msg:
+            print(msg, file=sys.stderr)
+        return code
     if a.cmd == "init":
         from .init import init
         return init(force=a.force, claude_md=a.claude_md)
@@ -63,6 +77,15 @@ def main(argv=None):
         res = doctor.check(cfg, run_gates=None if a.no_gates else (lambda: gates.run(cfg, here)))
         print(doctor.render(res))
         return 0 if doctor.all_ok(res) else 1
+
+    if a.cmd == "hooks":
+        from . import hooks
+        path = hooks.settings_path(None if a.user else main_root())
+        if a.action == "install":
+            hooks.install(path)
+        else:
+            hooks.uninstall(path)
+        return 0
 
     if a.cmd == "gates":
         if a.fix:
@@ -95,16 +118,23 @@ def main(argv=None):
         return 0
 
     if a.cmd == "log":
+        from . import hooks
+        from .util import read_json
         d = config.runs_dir(cfg) / str(a.ticket)
         logs = sorted(d.glob("*.log"), key=lambda f: f.stat().st_mtime)
         if a.step:
             logs = [f for f in logs if f.stem == a.step]
-        if not logs:
+        state = read_json(d / "state.json", {}) or {}
+        ws = state.get("ws")
+        hook_rows = hooks.rows_for(hooks.read_rows(cfg), state, step=a.step)
+        if not logs and not hook_rows:
             die(f"no Claude logs in {d}" + (f" for step {a.step}" if a.step else ""))
-        ws = (json.loads((d / "state.json").read_text()).get("ws") if (d / "state.json").exists() else None)
         for f in logs:
             print(f"## {f.stem}")
             print("\n".join(llm.render_log(f, cwd=ws)) or "(empty)")
+        if hook_rows:
+            print("## hooks")
+            print("\n".join(hooks.render_row(r, cwd=ws) for r in hook_rows))
         return 0
 
     if not cfg["_configured"]:

@@ -48,13 +48,17 @@ HEALTHY = {"gh label list": (0, LABELS), "git ls-remote": (0, "abc\trefs/heads/m
 class Doctor(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name) / "repo"
+        self.home = Path(self.tmp.name) / "home"
+        self.root.mkdir()
+        self.home.mkdir()
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def results(self, cfg, run, run_gates=None):
-        return {r["name"]: r for r in doctor.check(cfg, run=run, run_gates=run_gates)}
+        return {r["name"]: r for r in doctor.check(cfg, run=run, run_gates=run_gates,
+                                                   user_settings=self.home / ".claude" / "settings.json")}
 
     def test_missing_tool_fails_with_hint(self):
         res = self.results(config(self.root, {}), FakeRun(HEALTHY, missing={"claude"}))
@@ -129,6 +133,59 @@ class Doctor(unittest.TestCase):
         (self.root / ".knowledge").mkdir()
         (self.root / ".knowledge" / "files.jsonl").write_text("")
         self.assertTrue(self.results(cfg, FakeRun(HEALTHY))["knowledge base"]["ok"])
+
+    def settings(self, base, data):
+        (base / ".claude").mkdir(parents=True, exist_ok=True)
+        (base / ".claude" / "settings.json").write_text(json.dumps(data))
+
+    def test_hooks_missing_warns_with_install_hint(self):
+        res = self.results(config(self.root, {}), FakeRun(HEALTHY))
+        self.assertTrue(res["hooks"]["warn"])
+        self.assertIn("agent-kit hooks install", res["hooks"]["hint"])
+
+    def test_hooks_in_repo_or_user_settings(self):
+        from agentkit import hooks
+        self.settings(self.root, hooks.merge({}))
+        self.assertFalse(self.results(config(self.root, {}), FakeRun(HEALTHY))["hooks"]["warn"])
+        (self.root / ".claude" / "settings.json").unlink()
+        self.settings(self.home, hooks.merge({}))
+        self.assertFalse(self.results(config(self.root, {}), FakeRun(HEALTHY))["hooks"]["warn"])
+
+    def test_hooks_not_checked_when_stop_gate_off(self):
+        cfg = config(self.root, {})
+        cfg["hooks"]["stop_gate"] = False
+        self.assertNotIn("hooks", self.results(cfg, FakeRun(HEALTHY)))
+
+    def test_recent_hook_errors_warn(self):
+        import time
+        log = self.root / ".agent" / "runs" / "hooks.jsonl"
+        log.parent.mkdir(parents=True)
+        now = int(time.time())
+        rows = [{"ts": now - 90000, "event": "stop", "outcome": "error", "note": "old one"},
+                {"ts": now - 60, "event": "stop", "outcome": "pass"},
+                {"ts": now - 30, "event": "post-edit", "outcome": "error", "note": "TimeoutExpired: ruff",
+                 "cwd": "/wt/7-add"}]
+        log.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        res = self.results(config(self.root, {}), FakeRun(HEALTHY))["hook errors"]
+        self.assertTrue(res["warn"])
+        self.assertIn("1 in the last 24h", res["hint"])
+        self.assertIn("TimeoutExpired: ruff", res["hint"])
+        self.assertIn("/wt/7-add", res["hint"])
+        self.assertNotIn("old one", res["hint"])
+
+    def test_hook_error_window_from_config(self):
+        import time
+        log = self.root / ".agent" / "runs" / "hooks.jsonl"
+        log.parent.mkdir(parents=True)
+        log.write_text(json.dumps({"ts": int(time.time()) - 7200, "event": "stop", "outcome": "error", "note": "x"}) + "\n")
+        cfg = config(self.root, {})
+        cfg["hooks"]["error_window_hours"] = 1
+        self.assertFalse(self.results(cfg, FakeRun(HEALTHY))["hook errors"]["warn"])
+
+    def test_no_hook_errors(self):
+        res = self.results(config(self.root, {}), FakeRun(HEALTHY))["hook errors"]
+        self.assertFalse(res["warn"])
+        self.assertTrue(res["ok"])
 
     def test_render_and_ok(self):
         rs = [doctor.result("git", True), doctor.warning("config", "unknown keys (typo?): x"),

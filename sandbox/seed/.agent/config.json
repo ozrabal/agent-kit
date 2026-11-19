@@ -7,6 +7,7 @@
   "branch": {"base": "main", "remote": "origin", "name": "{key}-{slug}"},
   "workspace": {"mode": "worktree", "setup": [], "env": {}},
   "autofix": [],
+  "file_gates": [{"name": "compile", "match": "*.py", "cmd": "python3 -m py_compile {file}", "timeout": 30}],
   "gates": [{"name": "test", "cmd": "python3 -m unittest discover -s tests"}],
   "merge": {"policy": "pause", "max_open_prs": 1, "poll_seconds": 60},
   "loop": {"max_fix_rounds": 1, "max_review_rounds": 1, "timeout_seconds": 900},
