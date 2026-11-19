@@ -156,6 +156,26 @@ class Doctor(unittest.TestCase):
         cfg["hooks"]["stop_gate"] = False
         self.assertNotIn("hooks", self.results(cfg, FakeRun(HEALTHY)))
 
+    def test_recent_hook_errors_warn(self):
+        import time
+        log = self.root / ".agent" / "runs" / "hooks.jsonl"
+        log.parent.mkdir(parents=True)
+        now = int(time.time())
+        rows = [{"ts": now - 90000, "event": "stop", "outcome": "error", "note": "old one"},
+                {"ts": now - 60, "event": "stop", "outcome": "pass"},
+                {"ts": now - 30, "event": "post-edit", "outcome": "error", "note": "TimeoutExpired: ruff"}]
+        log.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        res = self.results(config(self.root, {}), FakeRun(HEALTHY))["hook errors"]
+        self.assertTrue(res["warn"])
+        self.assertIn("1 in the last 24h", res["hint"])
+        self.assertIn("TimeoutExpired: ruff", res["hint"])
+        self.assertNotIn("old one", res["hint"])
+
+    def test_no_hook_errors(self):
+        res = self.results(config(self.root, {}), FakeRun(HEALTHY))["hook errors"]
+        self.assertFalse(res["warn"])
+        self.assertTrue(res["ok"])
+
     def test_render_and_ok(self):
         rs = [doctor.result("git", True), doctor.warning("config", "unknown keys (typo?): x"),
               doctor.result("gh auth", False, "run `gh auth login`")]

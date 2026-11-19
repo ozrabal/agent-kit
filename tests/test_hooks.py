@@ -10,7 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agentkit import hooks  # noqa: E402
-from agentkit.config import DEFAULTS  # noqa: E402
+from agentkit.config import DEFAULTS, runs_dir  # noqa: E402
+from agentkit.util import read_jsonl  # noqa: E402
 
 
 def config(root, **over):
@@ -158,6 +159,84 @@ class PostEdit(HookTest):
         run = FakeRun()
         self.assertEqual(self.edit(self.root / "a.py", run, file_gates=()), (0, ""))
         self.assertEqual(run.calls, [])
+
+
+class HookLog(HookTest):
+    """Every hook call leaves one row in .agent/runs/hooks.jsonl."""
+
+    def rows(self):
+        return read_jsonl(runs_dir(config(self.root)) / "hooks.jsonl")
+
+    def call(self, event, check=None, run=None, active=False, **cfg_over):
+        cfg = config(self.root, **cfg_over)
+        raw = self.stdin(stop_hook_active=active, tool_input={"file_path": str(self.root / "a.py")})
+        deps = {"check": check} if event == "stop" else {"run": run}
+        return hooks.main(event, raw, load=lambda cwd: cfg, **deps)
+
+    def test_stop_pass_and_block(self):
+        self.call("stop", check=FakeGates(True))
+        self.call("stop", check=FakeGates(False))
+        a, b = self.rows()
+        self.assertEqual((a["event"], a["outcome"], a["session"]), ("stop", "pass", "s1"))
+        self.assertEqual(a["gates"], [{"name": "test", "ok": True, "secs": 0.1}])
+        self.assertEqual((b["outcome"], b["blocks"]), ("block", 1))
+        self.assertIn("FAIL: test_x", b["note"])
+        self.assertEqual(Path(b["cwd"]), self.root)
+        self.assertIsInstance(b["ts"], int)
+        self.assertIn("secs", b)
+
+    def test_stop_give_up(self):
+        g = FakeGates(False)
+        for active in (False, True, True):
+            self.call("stop", check=g, active=active)
+        self.assertEqual([r["outcome"] for r in self.rows()], ["block", "block", "give_up"])
+        self.assertEqual(self.rows()[-1]["blocks"], 2)
+
+    def test_post_edit_block_and_skip(self):
+        self.call("post-edit", run=FakeRun(1, "a.py:1: E999 SyntaxError"), file_gates=[RUFF])
+        self.call("post-edit", run=FakeRun(), file_gates=[])
+        a, b = self.rows()
+        self.assertEqual((a["event"], a["outcome"], a["file"]), ("post-edit", "block", "a.py"))
+        self.assertIn("E999", a["note"])
+        self.assertEqual((b["outcome"], b["note"]), ("skip", "no file_gates"))
+
+    def test_disabled_stop_gate_is_a_skip(self):
+        self.call("stop", check=FakeGates(True), hooks={"stop_gate": False, "stop_max_blocks": 2})
+        self.assertEqual((self.rows()[0]["outcome"], self.rows()[0]["note"]), ("skip", "hooks.stop_gate is off"))
+
+    def test_internal_error_is_logged(self):
+        def boom(cfg, cwd):
+            raise ValueError("gate runner broke")
+        code, _ = self.call("stop", check=boom)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.rows()[0]["outcome"], "error")
+        self.assertIn("gate runner broke", self.rows()[0]["note"])
+
+
+class RenderRow(unittest.TestCase):
+    def test_lines(self):
+        cases = [
+            ({"event": "post-edit", "file": "todo/cli.py", "outcome": "block", "secs": 0.12,
+              "gates": [{"name": "compile todo/cli.py", "ok": False, "secs": 0.1}],
+              "note": "FAIL compile todo/cli.py (0.1s)\n    SyntaxError: invalid syntax"},
+             "hook post-edit todo/cli.py: BLOCK compile todo/cli.py=FAIL (0.12s) | FAIL compile todo/cli.py (0.1s)"),
+            ({"event": "stop", "outcome": "pass", "secs": 1.5, "blocks": 0,
+              "gates": [{"name": "test", "ok": True, "secs": 1.4}]},
+             "hook stop: PASS test=ok (1.5s)"),
+            ({"event": "stop", "outcome": "block", "secs": 1.5, "blocks": 2,
+              "gates": [{"name": "test", "ok": False, "secs": 1.4}], "note": "FAIL test (1.4s)"},
+             "hook stop: BLOCK #2 test=FAIL (1.5s) | FAIL test (1.4s)"),
+            ({"event": "stop", "outcome": "give_up", "secs": 0.0, "blocks": 2, "note": "gates still fail"},
+             "hook stop: GIVE_UP #2 (0.0s) | gates still fail"),
+            ({"event": "post-edit", "outcome": "skip", "secs": 0.01, "file": "README.md", "note": "no file_gates match"},
+             "hook post-edit README.md: SKIP (0.01s) | no file_gates match"),
+        ]
+        for row, line in cases:
+            self.assertEqual(hooks.render_row(row), line)
+
+    def test_paths_relative_to_cwd(self):
+        row = {"event": "post-edit", "outcome": "skip", "secs": 0, "file": "/ws/a.md", "note": "x"}
+        self.assertEqual(hooks.render_row(row, cwd="/ws"), "hook post-edit a.md: SKIP (0s) | x")
 
 
 FOREIGN = {"permissions": {"allow": ["Bash(ls *)"]}, "hooks": {

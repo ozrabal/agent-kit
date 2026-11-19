@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from string import Template
 
-from . import gates, kb, llm
+from . import gates, hooks, kb, llm
 from .config import READ_ONLY_BASH, fmt, runs_dir
 from .tracker import make
 from .util import KIT_DIR, clip, log, out, read_json, sh, slug, write_json
@@ -210,12 +210,13 @@ class Loop:
 
     def _impl(self, run, ws, text, step, resume=None):
         c = self.cfg
-        res, sid = llm.claude(
-            text, cwd=ws, step=step, model=c["models"]["implement"], effort=c["effort"]["implement"],
-            schema=IMPL_SCHEMA, tools=c["implement"]["tools"], permission_mode=c["implement"]["permission_mode"],
-            allow=self._allow(), budget=c["budget_usd"]["fix" if resume else "implement"], resume=resume,
-            persist=True, timeout=c["loop"]["timeout_seconds"], cost_log=run.cost_log,
-            stream_log=run.dir / f"{step.replace(':', '-')}.log")
+        with hooks.watch(c, ws, step):  # print the session's hook calls live
+            res, sid = llm.claude(
+                text, cwd=ws, step=step, model=c["models"]["implement"], effort=c["effort"]["implement"],
+                schema=IMPL_SCHEMA, tools=c["implement"]["tools"], permission_mode=c["implement"]["permission_mode"],
+                allow=self._allow(), budget=c["budget_usd"]["fix" if resume else "implement"], resume=resume,
+                persist=True, timeout=c["loop"]["timeout_seconds"], cost_log=run.cost_log,
+                stream_log=run.dir / f"{step.replace(':', '-')}.log")
         run.set(session=sid or resume, impl=res)
         return res
 

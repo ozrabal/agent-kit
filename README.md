@@ -31,7 +31,7 @@ agent-kit doctor [--no-gates]  # check tools, gh auth, config keys, labels, base
 agent-kit status               # ready / blocked tickets
 agent-kit hooks install [--user] # Claude Code hooks: file gates after each edit, gates before stopping
 agent-kit report [--json]      # cost, tokens, fix and review rounds per ticket run
-agent-kit log 12               # what Claude did on ticket #12: tool calls, errors, cost
+agent-kit log 12               # what Claude did on ticket #12: tool calls, errors, denials, hook calls
 agent-kit run --dry-run        # show the prompt for the next ticket, change nothing
 agent-kit run                  # do the next unblocked ticket, open a PR, pause for merge
 agent-kit run --wait           # keep going: poll for merges (no LLM), then the next ticket
@@ -94,6 +94,10 @@ Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
 - `hooks.stop_gate` (default `true`): autofix + `gates` run when Claude wants to finish; failures
   send it back to fix them, at most `hooks.stop_max_blocks` (default `2`) times in a row.
   The loop still runs the gates after implement as a safety net; `state.json` records `fix_rounds`.
+- Every hook call is logged to `.agent/runs/hooks.jsonl` (event, file, outcome
+  `pass|block|skip|give_up|error`, gates with times, a short note). `agent-kit run` prints each one
+  live, `agent-kit log <n>` lists them under `## hooks`, `agent-kit report` counts them per ticket
+  (`hooks`, `edit_blk`, `stop_blk`, `hook_err`) and `doctor` warns about hook errors in the last 24h.
 - Hooks do nothing in repos without `.agent/config.json`. Gates in hooks cost no tokens; Claude
   reads the compacted failure output in its session.
 

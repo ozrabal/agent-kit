@@ -3,10 +3,11 @@ No LLM. Each check returns results {name, ok, warn, hint}; the hint says how to 
 A warning (ok but worth a look) does not fail doctor."""
 import json
 import sys
+import time
 
 from . import hooks, kb
 from .config import DEFAULTS, config_path
-from .util import read_json, sh
+from .util import read_json, read_jsonl, sh
 
 TOOLS = {
     "git": "install git",
@@ -114,8 +115,19 @@ def check_hooks(ctx):
                     "`agent-kit hooks install` and commit .claude/settings.json")]
 
 
+def check_hook_errors(ctx):
+    """Hooks never fail a session; their internal errors only show up in .agent/runs/hooks.jsonl."""
+    since = time.time() - 24 * 3600
+    errs = [r for r in read_jsonl(hooks.log_path(ctx.cfg)) if r.get("outcome") == "error" and (r.get("ts") or 0) >= since]
+    if not errs:
+        return [result("hook errors", True)]
+    last = errs[-1]
+    return [warning("hook errors", f"{len(errs)} in the last 24h; latest ({last.get('event')}): {last.get('note')}")]
+
+
 CHECKS = [check_tools, check_python, check_gh_auth, check_config, check_labels, check_base_branch,
-          check_gates, check_knowledge_base, check_hooks]
+          check_gates, check_knowledge_base, check_hooks,
+          check_hook_errors]
 
 
 class Ctx:

@@ -118,16 +118,22 @@ def main(argv=None):
         return 0
 
     if a.cmd == "log":
+        from . import hooks
+        from .util import read_jsonl
         d = config.runs_dir(cfg) / str(a.ticket)
         logs = sorted(d.glob("*.log"), key=lambda f: f.stat().st_mtime)
         if a.step:
             logs = [f for f in logs if f.stem == a.step]
-        if not logs:
-            die(f"no Claude logs in {d}" + (f" for step {a.step}" if a.step else ""))
         ws = (json.loads((d / "state.json").read_text()).get("ws") if (d / "state.json").exists() else None)
+        hook_rows = [] if a.step else [r for r in read_jsonl(hooks.log_path(cfg)) if hooks.in_worktree(r, ws)]
+        if not logs and not hook_rows:
+            die(f"no Claude logs in {d}" + (f" for step {a.step}" if a.step else ""))
         for f in logs:
             print(f"## {f.stem}")
             print("\n".join(llm.render_log(f, cwd=ws)) or "(empty)")
+        if hook_rows:
+            print("## hooks")
+            print("\n".join(hooks.render_row(r, cwd=ws) for r in hook_rows))
         return 0
 
     if not cfg["_configured"]:

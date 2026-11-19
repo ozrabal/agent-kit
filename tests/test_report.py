@@ -57,6 +57,29 @@ class Report(unittest.TestCase):
         self.assertEqual(rep["rows"][0]["key"], "#2")
         self.assertEqual(rep["rows"][0]["gates"], "-")
 
+    def test_hook_calls_counted_per_worktree(self):
+        make_run(self.runs, 7, {"status": "pr_open", "ws": "/wt/7-add"}, [call("implement", 1.0)])
+        make_run(self.runs, 8, {"status": "pr_open", "ws": "/wt/8-other"}, [call("implement", 1.0)])
+        hook = [{"event": "post-edit", "outcome": "block", "cwd": "/wt/7-add"},
+                {"event": "post-edit", "outcome": "pass", "cwd": "/wt/7-add/todo"},
+                {"event": "stop", "outcome": "block", "cwd": "/wt/7-add"},
+                {"event": "stop", "outcome": "block", "cwd": "/wt/7-add"},
+                {"event": "stop", "outcome": "give_up", "cwd": "/wt/7-add"},
+                {"event": "stop", "outcome": "error", "cwd": "/wt/7-add"},
+                {"event": "stop", "outcome": "block", "cwd": "/wt/7-additional"},
+                {"event": "stop", "outcome": "pass", "cwd": "/somewhere/else"}]
+        (self.runs / "hooks.jsonl").write_text("".join(json.dumps(r) + "\n" for r in hook))
+        a, b = report.collect(self.runs)["rows"]
+        self.assertEqual((a["hook_calls"], a["edit_blocks"], a["stop_blocks"], a["hook_errors"]), (6, 1, 2, 1))
+        self.assertEqual((b["hook_calls"], b["edit_blocks"], b["stop_blocks"], b["hook_errors"]), (0, 0, 0, 0))
+
+    def test_hook_calls_respect_since(self):
+        make_run(self.runs, 7, {"status": "pr_open", "ws": "/wt/7"}, [call("implement", 1.0, ts=200)])
+        hook = [{"ts": 50, "event": "stop", "outcome": "block", "cwd": "/wt/7"},
+                {"ts": 250, "event": "stop", "outcome": "block", "cwd": "/wt/7"}]
+        (self.runs / "hooks.jsonl").write_text("".join(json.dumps(r) + "\n" for r in hook))
+        self.assertEqual(report.collect(self.runs, since=100)["rows"][0]["stop_blocks"], 1)
+
     def test_broken_cost_line_is_skipped(self):
         make_run(self.runs, 5, {}, [call("implement", 1.0)])
         with (self.runs / "5" / "cost.jsonl").open("a") as f:
@@ -72,10 +95,11 @@ class Report(unittest.TestCase):
         make_run(self.runs, 3, {"key": "#3", "status": "needs_human", "gates": {"ok": False}},
                  [call("implement", 1.25, i=1000, o=20), call("fix-gates:1", 0.5), call("fix-gates:2", 0.5)])
         lines = report.render(report.collect(self.runs)).splitlines()
-        self.assertEqual(lines[0].split(), ["ticket", "status", "usd", "calls", "fix", "review", "gates",
-                                            "in", "cache_r", "out"])
-        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "FAIL", "1000", "0", "20"])
-        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "1000", "0", "20"])
+        self.assertEqual(lines[0].split(), ["ticket", "status", "usd", "calls", "fix", "review", "gates", "hooks",
+                                            "edit_blk", "stop_blk", "hook_err", "in", "cache_r", "out"])
+        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "FAIL", "0", "0", "0", "0",
+                                            "1000", "0", "20"])
+        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0", "1000", "0", "20"])
 
 
 if __name__ == "__main__":
