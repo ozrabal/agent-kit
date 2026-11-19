@@ -112,10 +112,13 @@ def _stream(cmd, prompt, *, cwd, step, timeout, path):
                 except json.JSONDecodeError:
                     other.append(line)
                     continue
-                if ev.get("type") == "result":
+                if isinstance(ev, dict) and ev.get("type") == "result":
                     result = ev
-                for text in describe(ev, cwd):
-                    log(f"  {step} | {text}")
+                try:
+                    for text in describe(ev, cwd):
+                        log(f"  {step} | {text}")
+                except Exception as e:  # printing must never stop the session
+                    log(f"  {step} | (could not show an event: {type(e).__name__})")
         proc.wait()
     finally:
         timer.cancel()
@@ -134,14 +137,22 @@ def _short(value, n=100):
     return value if len(value) <= n else value[: n - 3] + "..."
 
 
+def _content(ev):
+    """The message content blocks of an event; [] for any other shape."""
+    msg = ev.get("message") if isinstance(ev, dict) else None
+    content = msg.get("content") if isinstance(msg, dict) else None
+    return [c for c in content if isinstance(c, dict)] if isinstance(content, list) else []
+
+
 def describe(ev, cwd=None):
-    """One short line per tool call or failed tool result in a stream-json event."""
+    """One short line per tool call, failed tool result or permission denial in a stream-json event."""
     out = []
-    t = ev.get("type")
-    content = (ev.get("message") or {}).get("content")
-    if not isinstance(content, list):
+    if not isinstance(ev, dict):
         return out
-    for c in content:
+    t = ev.get("type")
+    if ev.get("subtype") == "permission_denied":
+        return [f"  ! denied {ev.get('tool_name') or 'tool'}: {_short(ev.get('message') or '')}"]
+    for c in _content(ev):
         if t == "assistant" and c.get("type") == "tool_use":
             name, inp = c.get("name"), c.get("input") or {}
             if name == "StructuredOutput":
@@ -167,8 +178,10 @@ def render_log(path, cwd=None):
         except json.JSONDecodeError:
             continue
         lines += describe(ev, cwd)
+        if not isinstance(ev, dict):
+            continue
         if ev.get("type") == "assistant":
-            for c in (ev.get("message") or {}).get("content") or []:
+            for c in _content(ev):
                 if c.get("type") == "text" and c.get("text", "").strip():
                     lines.append(f"  > {_short(c['text'], 160)}")
         if ev.get("type") == "result":
