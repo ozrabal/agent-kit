@@ -151,10 +151,26 @@ class Doctor(unittest.TestCase):
         self.settings(self.home, hooks.merge({}))
         self.assertFalse(self.results(config(self.root, {}), FakeRun(HEALTHY))["hooks"]["warn"])
 
-    def test_hooks_not_checked_when_stop_gate_off(self):
+    def test_hooks_checked_also_when_stop_gate_off(self):
         cfg = config(self.root, {})
         cfg["hooks"]["stop_gate"] = False
-        self.assertNotIn("hooks", self.results(cfg, FakeRun(HEALTHY)))
+        self.assertTrue(self.results(cfg, FakeRun(HEALTHY))["hooks"]["warn"])
+
+    def test_old_install_names_the_missing_events(self):
+        self.settings(self.root, {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "agent-kit hook stop"}]}]}})
+        hint = self.results(config(self.root, {}), FakeRun(HEALTHY))["hooks"]["hint"]
+        self.assertIn("PreToolUse", hint)
+        self.assertIn("SessionStart", hint)
+
+    def test_recent_guard_denials_warn(self):
+        import time
+        log = self.root / ".agent" / "runs" / "hooks.jsonl"
+        log.parent.mkdir(parents=True)
+        log.write_text(json.dumps({"ts": int(time.time()), "event": "guard", "outcome": "block", "cwd": "/wt/5",
+                                   "note": "agent-kit guard: blocked Bash: curl"}) + "\n")
+        res = self.results(config(self.root, {}), FakeRun(HEALTHY))["guard denials"]
+        self.assertTrue(res["warn"])
+        self.assertIn("blocked Bash", res["hint"])
 
     def test_recent_hook_errors_warn(self):
         import time

@@ -5,13 +5,14 @@ Exit 2 blocks (Claude sees the message); anything else is exit 0. A hook never c
 an internal error is exit 0 with a short note."""
 import fnmatch
 import json
+import re
 import shlex
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import config, gates
+from . import config, gates, kb
 from .util import append_jsonl, log, main_root, read_json, read_jsonl, repo_root, sh, write_json
 
 # Outcomes of a hook call, as logged in .agent/runs/hooks.jsonl.
@@ -45,9 +46,9 @@ def _agent_root(cwd):
     return root if (root / ".agent").is_dir() else None
 
 
-def _outcome(outcome, code=0, msg="", **row):
-    """What a handler returns: (exit code, stderr message, fields for the hook log row)."""
-    return code, msg, {"outcome": outcome, **row}
+def _outcome(outcome, code=0, msg="", out="", **row):
+    """What a handler returns: (exit code, stderr message, fields for the hook log row, stdout)."""
+    return code, msg, {"outcome": outcome, **row}, out
 
 
 def _gates_row(report):
@@ -109,10 +110,102 @@ def stop(cfg, data, check=_check):
                     gates=_gates_row(rep), blocks=blocks + 1, note=text)
 
 
-EVENTS = {"post-edit": post_edit, "stop": stop}
+def active_run(cfg, cwd):
+    """state.json of the loop run whose worktree is cwd's checkout and that is still working, or None."""
+    here = _repo(cwd).resolve()
+    for f in config.runs_dir(cfg).glob("*/state.json"):
+        s = read_json(f, {}) or {}
+        if s.get("ws") and Path(s["ws"]).resolve() == here and str(s.get("status") or "").startswith((config.IMPLEMENTING, config.FIXING_REVIEW)):
+            return s
+    return None
+
+
+EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+
+
+def guard(cfg, data):
+    """PreToolUse: keep edits in the run's worktree and off protected paths; deny risky Bash."""
+    g, cwd = cfg["guard"], _cwd(cfg, data)
+    tool, inp = data.get("tool_name"), data.get("tool_input") or {}
+    run = active_run(cfg, cwd)
+    if run is None and not g["always"]:
+        return _outcome(SKIP, tool=tool, note="no active loop run")
+    root = Path(run["ws"] if run else _repo(cwd)).resolve()
+    if tool in EDIT_TOOLS:
+        path = inp.get("file_path") or inp.get("notebook_path")
+        if not path:
+            return _outcome(SKIP, tool=tool, note="no file path in tool_input")
+        try:
+            rel = (Path(cwd) / path).resolve().relative_to(root).as_posix()
+        except ValueError:
+            return _deny(tool, f"{path} is outside the worktree", f"edit files inside {root}", file=path)
+        hit = next((p for p in g["protected"] if fnmatch.fnmatch(rel, p)), None)
+        if hit:
+            return _deny(tool, f"{rel} is protected ({hit})",
+                         f"edit project files inside {root} except {', '.join(g['protected'])}", file=path)
+        return _outcome(PASS, tool=tool, file=path)
+    if tool == "Bash":
+        cmd = inp.get("command") or ""
+        hit = next((p for p in g["deny_bash"] if re.search(p, cmd)), None)
+        if hit:
+            return _deny(tool, f"this command matches guard.deny_bash ({hit})",
+                         "read-only git, `agent-kit gates`, and the project's own commands. The driver "
+                         "commits, pushes and opens the PR", command=cmd[:300])
+        return _outcome(PASS, tool=tool, command=cmd[:300])
+    return _outcome(SKIP, tool=tool, note="not a guarded tool")
+
+
+def _deny(tool, why, allowed, **row):
+    msg = f"agent-kit guard: blocked {tool}: {why}. Allowed instead: {allowed}."
+    return _outcome(BLOCK, 2, msg, tool=tool, note=msg, **row)
+
+
+HINT = ("Before exploring the repo for a task, run `agent-kit kb context \"<task>\"` (or `#<issue>`): "
+        "likely files, past tickets, gotchas and the full rules for those files.")
+
+
+def _cwd(cfg, data):
+    return data.get("cwd") or cfg["_root"]
+
+
+def _digest_and_hint(cfg, cwd):
+    """For sessions without a context pack: the rules digest (if any) and how to get a pack."""
+    f = kb.kdir(cfg, _repo(cwd)) / "rules-digest.md"
+    digest = f.read_text().strip() if f.exists() else ""
+    return "\n\n".join(x for x in (digest, HINT) if x), "digest" if digest else "hint only"
+
+
+def session_start(cfg, data):
+    """SessionStart (stdout goes into Claude's context): the rules digest and a kb hint, except in a loop
+    run, whose prompt already has the context pack."""
+    cwd = _cwd(cfg, data)
+    if active_run(cfg, cwd):
+        return _outcome(SKIP, note="loop run: the prompt has the pack")
+    text, note = _digest_and_hint(cfg, cwd)
+    return _outcome(PASS, out=text, note=note)
+
+
+def subagent_start(cfg, data):
+    """SubagentStart: give the sub-agent the run's context pack (context.md), or the digest outside a run.
+    It can only add context (JSON additionalContext), not block."""
+    cwd = _cwd(cfg, data)
+    run = active_run(cfg, cwd)
+    pack = config.runs_dir(cfg) / str(run["number"]) / "context.md" if run else None
+    if pack and pack.exists():
+        text, note = pack.read_text(), f"context pack of #{run['number']}"
+    else:
+        text, note = _digest_and_hint(cfg, cwd)
+    out = json.dumps({"hookSpecificOutput": {"hookEventName": "SubagentStart", "additionalContext": text}})
+    return _outcome(PASS, out=out, agent=data.get("agent_type"), note=note)
+
+
+EVENTS = {"post-edit": post_edit, "stop": stop, "guard": guard, "session-start": session_start,
+          "subagent-start": subagent_start}
 
 # What `agent-kit hooks install` writes into .claude/settings.json: {Claude event: (matcher, our event)}.
-SETTINGS = {"PostToolUse": ("Edit|Write|MultiEdit", "post-edit"), "Stop": (None, "stop")}
+SETTINGS = {"PostToolUse": ("Edit|Write|MultiEdit", "post-edit"), "Stop": (None, "stop"),
+            "PreToolUse": ("|".join(EDIT_TOOLS) + "|Bash", "guard"), "SessionStart": (None, "session-start"),
+            "SubagentStart": (None, "subagent-start")}
 
 
 def command(event):
@@ -157,15 +250,24 @@ def settings_path(root=None):
     return (Path(root) if root else Path.home()) / ".claude" / "settings.json"
 
 
-def installed(settings):
+def missing(settings):
+    """Claude events whose agent-kit hook is not in settings."""
     hk = (settings or {}).get("hooks") or {}
-    return all(any(h.get("command") == command(ours) for g in hk.get(event, []) for h in g.get("hooks", []))
-               for event, (_, ours) in SETTINGS.items())
+    return sorted(event for event, (_, ours) in SETTINGS.items()
+                  if not any(h.get("command") == command(ours) for g in hk.get(event, []) for h in g.get("hooks", [])))
+
+
+def installed(settings):
+    return not missing(settings)
 
 
 def render_row(row, cwd=None):
     """One readable line for a hook log row, for `agent-kit log` and the live run output."""
     f = _relative(row.get("file") or "", cwd)
+    if row.get("command"):
+        f = f"`{row['command'][:80]}`"
+    if row.get("tool"):
+        f = f"{row['tool']} {f}".strip()
     head = f"hook {row.get('event')}{' ' + f if f else ''}: {str(row.get('outcome')).upper()}"
     if row.get("event") == "stop" and row.get("outcome") in (BLOCK, GIVE_UP):
         head += f" #{row.get('blocks')}"
@@ -258,20 +360,20 @@ def _log(cfg, event, data, row, t0):
 
 
 def main(event, raw, load=_load, agent_root=_agent_root, **deps):
-    """(exit code, message for stderr). Every call in a repo with .agent/ is logged to
+    """(exit code, message for stderr, text for stdout). Every call in a repo with .agent/ is logged to
     .agent/runs/hooks.jsonl, also when the config fails to load. deps go to the event handler (fakes in tests)."""
     t0, cfg, data = time.time(), None, {}
     try:
         data = json.loads(raw or "{}")
         cfg = load(data.get("cwd"))
         if cfg is None:  # not an agent-kit repo: nothing to do, nothing to log
-            return 0, ""
+            return 0, "", ""
         handler = EVENTS.get(event)
         if handler is None:
             raise ValueError(f"unknown event {event!r} (known: {', '.join(EVENTS)})")
-        code, msg, row = handler(cfg, data, **deps)
+        code, msg, row, out = handler(cfg, data, **deps)
     except Exception as e:  # a hook must never break the session
-        code, msg, row = _outcome(ERROR, note=f"{type(e).__name__}: {str(e)[:300]}")
+        code, msg, row, out = _outcome(ERROR, note=f"{type(e).__name__}: {str(e)[:300]}")
         if cfg is None:
             root = agent_root(data.get("cwd")) if isinstance(data, dict) else None
             cfg = {"_root": str(root), "hooks": config.DEFAULTS["hooks"]} if root else None
@@ -282,7 +384,7 @@ def main(event, raw, load=_load, agent_root=_agent_root, **deps):
             _log(cfg, event, data if isinstance(data, dict) else {}, row, t0)
         except Exception as e:  # logging must not break the session either
             msg = (msg + "\n" if msg else "") + f"agent-kit hook {event}: could not write the hook log ({e})"
-    return code, msg
+    return code, msg, out
 
 
 def install(path):
