@@ -18,7 +18,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-from agentkit.report import METRICS  # noqa: E402
+from agentkit.report import METRICS, MONEY  # noqa: E402
 
 OUT = HERE / "bench"
 DEFAULT_TICKETS = "1,4,5"  # normal implementation probes; 2 and 3 wait for merges, 6 is not ready
@@ -41,7 +41,7 @@ def compare(before, after):
 
 
 def _num(v, m):
-    return "-" if v is None else (f"{v:.2f}" if m == "usd" else str(v))
+    return "-" if v is None else (f"{v:.2f}" if m in MONEY else str(v))
 
 
 def format_compare(rows):

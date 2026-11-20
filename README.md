@@ -53,7 +53,8 @@ are local.
 | autofix (formatters), then gates; failures compacted to the relevant lines | script |
 | fix gate failures, up to `loop.max_fix_rounds` | LLM, same session resumed |
 | commit | script |
-| review: spec criteria + findings, diff only, lean system prompt, Read tools | LLM |
+| review plan: skip (docs only, or small and no acceptance criteria), light or full model | script |
+| review: spec criteria + findings, diff only, lean system prompt, Read tools | LLM (unless skipped) |
 | fix blocking findings, up to `loop.max_review_rounds` | LLM, same session resumed |
 | ticket note, lessons into gotchas/conventions, kb update, commit | script (+ LLM summaries for new files) |
 | push, PR with `Closes #N`, gates, review result, concerns | script |
@@ -81,6 +82,18 @@ If gates or review still fail after the rounds, the loop pushes a **draft** PR w
   text of the rules for the files it picked, the review prompt has `conventions.md` plus the rules
   for the changed files, and other sessions get a one-line-per-rule digest
   (`.knowledge/rules-digest.md`, written by `kb update`).
+- The script decides whether and with which model the review runs (`review_plan`): no review when
+  every changed file matches `review.skip_paths`, or when the diff has at most
+  `review.skip_under_lines` changed lines and the ticket has no acceptance criteria (an
+  "Acceptance criteria" heading or a `- [ ]` checklist); `models.review` for `review.risky_paths` or
+  more than `review.light_max_lines` lines, `models.review_light` otherwise. The decision is logged
+  (`review plan: ...`), stored in `state.json` (`plan` on each `reviews` entry), listed by `agent-kit log <n>` under
+  `## review plan`, counted by `agent-kit report` (`rv_skip`, `rv_light`, `rv_full`, plus review
+  cost `rv_usd` and `rv_cache_r`) and stated in the PR ("Automated review skipped: <reason>").
+- Prompts put stable text first: the review's instructions are its system prompt
+  (`prompts/review-system.md`, the same for every ticket), so repeated reviews can read it from the
+  prompt cache; the user message holds only conventions/rules, ticket, diff stat and diff. The
+  implement prompt starts with how to work and what to return; ticket and context pack come last.
 - Implement, fix and review stream their sessions to `.agent/runs/<n>/<step>.log` and print each
   tool call while they run. Same tokens as before; only the output format changes.
 
@@ -121,6 +134,11 @@ Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
   to use `agent-kit kb context` into Claude's context; in a run it prints nothing (the prompt has
   the pack). `subagent-start` (SubagentStart, which can add context but not block): gives every
   sub-agent the run's `context.md`, or the digest outside a run, as `additionalContext`.
+- `review.*` decides the review (see Token use): `skip_paths` (default `["*.md", "docs/**",
+  "*.txt"]`), `skip_under_lines` (default `0` = never skip by size), `risky_paths` (default `[]`,
+  e.g. `["**/auth/**", "**/migrations/**"]`), `light_max_lines` (default `300`). Models:
+  `models.review` (default `opus`) and `models.review_light` (default `sonnet`); both use
+  `budget_usd.review`. Globs as for rules: `*` crosses folders, `**/x` also matches `x`.
 - Hooks do nothing in repos without `.agent/config.json`. Gates in hooks cost no tokens; Claude
   reads the compacted failure output in its session.
 
