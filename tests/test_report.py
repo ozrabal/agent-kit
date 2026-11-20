@@ -114,11 +114,28 @@ class Report(unittest.TestCase):
         make_run(self.runs, 3, {"key": "#3", "status": "needs_human", "gates": {"ok": False}},
                  [call("implement", 1.25, i=1000, o=20), call("fix-gates:1", 0.5), call("fix-gates:2", 0.5)])
         lines = report.render(report.collect(self.runs)).splitlines()
-        self.assertEqual(lines[0].split(), ["ticket", "status", "usd", "calls", "fix", "review", "gates", "hooks",
+        self.assertEqual(lines[0].split(), ["ticket", "status", "usd", "calls", "fix", "review", "rv_skip", "rv_light", "rv_full",
+                                        "rv_usd", "rv_in", "rv_cache_r", "gates", "hooks",
                                             "edit_blk", "stop_blk", "guard_blk", "hook_err", "in", "cache_r", "out"])
-        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "FAIL", "0", "0", "0", "0", "0",
+        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "0", "0", "0", "0.00", "0", "0", "FAIL", "0", "0", "0", "0", "0",
                                             "1000", "0", "20"])
-        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0", "0", "1000", "0", "20"])
+        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0", "1000", "0", "20"])
+
+    def test_review_decisions_and_review_cost(self):
+        def rv(tier):
+            return {"pass": True, "plan": {"run": tier != "skip", "model": None, "reason": "r", "tier": tier}}
+        reviews = [rv("skip"), rv("light"), rv("full"), rv("light"), {"pass": True, "criteria": []}]  # last: no plan (older run)
+        make_run(self.runs, 7, {"key": "#7", "reviews": reviews},
+                 [call("implement", 1.0, i=10, cr=100), call("review", 0.5, i=3, cr=30), call("review", 0.25, i=1, cr=6)])
+        make_run(self.runs, 8, {"key": "#8"}, [call("implement", 1.0)])  # older run, no plans
+        rep = report.collect(self.runs)
+        row = rep["rows"][0]
+        self.assertEqual((row["review_skipped"], row["review_light"], row["review_full"]), (1, 2, 1))
+        self.assertEqual((row["review_usd"], row["review_in"], row["review_cache_r"]), (0.75, 4, 36))
+        self.assertEqual(rep["rows"][1]["review_skipped"], 0)
+        self.assertEqual(rep["total"]["review_light"], 2)
+        for m in ("review_skipped", "review_light", "review_full", "review_usd", "review_cache_r"):
+            self.assertIn(m, report.METRICS)
 
 
 if __name__ == "__main__":

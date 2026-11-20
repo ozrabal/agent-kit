@@ -129,11 +129,17 @@ def main(argv=None):
         state = read_json(d / "state.json", {}) or {}
         ws = state.get("ws")
         hook_rows = hooks.rows_for(hooks.read_rows(cfg), state, step=a.step)
-        if not logs and not hook_rows:
+        plans = [rv["plan"] for rv in state.get("reviews") or [] if rv.get("plan")]
+        if not logs and not hook_rows and not plans:
             die(f"no Claude logs in {d}" + (f" for step {a.step}" if a.step else ""))
         for f in logs:
             print(f"## {f.stem}")
             print("\n".join(llm.render_log(f, cwd=ws)) or "(empty)")
+        if plans and not a.step:
+            print("## review plan")
+            for i, p in enumerate(plans, 1):
+                model = f" {p['model']}" if p["run"] else ""
+                print(f"{i}. {p['tier'].upper()}{model}: {p['reason']}")
         if hook_rows:
             print("## hooks")
             print("\n".join(hooks.render_row(r, cwd=ws) for r in hook_rows))

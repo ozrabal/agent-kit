@@ -42,7 +42,7 @@ DEFAULTS = {
     },
     "merge": {"policy": "pause", "max_open_prs": 1, "poll_seconds": 120},
     "loop": {"max_fix_rounds": 2, "max_review_rounds": 2, "timeout_seconds": 3600},
-    "models": {"implement": "sonnet", "review": "opus", "summarize": "haiku"},
+    "models": {"implement": "sonnet", "review": "opus", "review_light": "sonnet", "summarize": "haiku"},
     "effort": {"implement": None, "review": None, "summarize": "low"},
     "budget_usd": {"implement": 8, "fix": 3, "review": 3, "summarize": 0.5},
     "implement": {
@@ -55,6 +55,10 @@ DEFAULTS = {
         "diff_chars": 60000,
         "block_on": ["blocker", "major"],
         "exclude": ["*.lock", "*-lock.json", "*.lock.json", ".knowledge/*", "*.snap", "*.min.*"],
+        "skip_paths": ["*.md", "docs/**", "*.txt"],  # every changed file matches: no review
+        "skip_under_lines": 0,  # skip at or under this many lines (0 = never), unless criteria
+        "risky_paths": [],  # any changed file matches: models.review
+        "light_max_lines": 300,  # above this: models.review, else models.review_light
     },
     "pr": {"sections": ["Summary", "Evidence"], "include_review": True, "draft_on_fail": True},
     "kb": {

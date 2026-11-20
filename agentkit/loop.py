@@ -9,6 +9,7 @@ between:     merge policy "pause": stop (or --wait: poll gh, no LLM) until the P
              then reconcile: label done, close issue, remove worktree.
 """
 import json
+import re
 import shutil
 import time
 from pathlib import Path
@@ -54,12 +55,16 @@ REVIEW_SCHEMA = {
     },
     "required": ["criteria", "findings", "lessons"],
 }
-REVIEW_SYSTEM = ("You are a strict, fair senior code reviewer. You report only findings you have "
-                 "verified against the code, each with a concrete failure scenario.")
 
 
 def prompt(name, **vals):
     return Template((KIT_DIR / "prompts" / f"{name}.md").read_text()).safe_substitute(**vals)
+
+
+def review_system(cfg):
+    """The review's stable part (role, gates, instructions) as its system prompt: same for every
+    ticket of a project, so repeated reviews can read it from the prompt cache."""
+    return prompt("review-system", gate_names=", ".join(g["name"] for g in map(gates._norm, cfg["gates"])) or "(none)")
 
 
 class Run:
@@ -95,6 +100,44 @@ def _pathspec_excludes(patterns):
             g = g[:-1] + "**"
         res.append(f":(exclude,glob){g}")
     return res
+
+
+def has_criteria(body):
+    """True when a ticket states acceptance criteria: such a heading or a markdown checklist."""
+    return bool(re.search(r"(?im)^#+\s*acceptance criteria\b|^\s*[-*]\s+\[[ xX]\]", body or ""))
+
+
+TIERS = ("skip", "light", "full")
+
+
+def review_plan(cfg, changed, diff_lines, body="", reviewed=None):
+    """Whether the review runs and with which model: {"run", "model", "reason", "tier": skip|light|full}. Pure.
+    reviewed: the highest tier an earlier round of this ticket ran; a re-review never goes below it."""
+    p = _plan(cfg, changed, diff_lines, body)
+    if reviewed and TIERS.index(p["tier"]) < TIERS.index(reviewed):
+        model = cfg["models"]["review" if reviewed == "full" else "review_light"]
+        p = {"run": True, "model": model, "tier": reviewed,
+             "reason": f"{p['reason']}; kept {reviewed}: an earlier round was reviewed"}
+    return p
+
+
+def _plan(cfg, changed, diff_lines, body):
+    r, m = cfg["review"], cfg["models"]
+    if changed and all(kb.matches(p, r["skip_paths"]) for p in changed):
+        return {"run": False, "model": None, "reason": "docs only", "tier": "skip"}
+    risky = next((p for p in changed if r["risky_paths"] and kb.matches(p, r["risky_paths"])), None)
+    if risky:
+        return {"run": True, "model": m["review"], "reason": f"risky path {risky}", "tier": "full"}
+    if changed and r["skip_under_lines"] > 0 and diff_lines <= r["skip_under_lines"] and not has_criteria(body):
+        return {"run": False, "model": None, "tier": "skip",
+                "reason": f"{diff_lines} changed lines <= review.skip_under_lines ({r['skip_under_lines']})"}
+    if not changed:
+        return {"run": True, "model": m["review"], "reason": "no reviewable files listed", "tier": "full"}
+    if diff_lines > r["light_max_lines"]:
+        return {"run": True, "model": m["review"], "tier": "full",
+                "reason": f"{diff_lines} changed lines > review.light_max_lines ({r['light_max_lines']})"}
+    return {"run": True, "model": m["review_light"], "reason": f"{diff_lines} changed lines, ordinary paths",
+            "tier": "light"}
 
 
 class Loop:
@@ -225,22 +268,33 @@ class Loop:
         c = self.cfg
         ex = _pathspec_excludes(c["review"]["exclude"])
         rng = f"{self.upstream}...HEAD"
+        changed = out(["git", "diff", "--name-only", rng, "--", ".", *ex], cwd=ws).splitlines()
+        numstat = out(["git", "diff", "--numstat", rng, "--", ".", *ex], cwd=ws)
+        # a binary file shows "-\t-": count it as one line so it is never "zero lines changed"
+        lines = sum(int(a) + int(d) if a.isdigit() and d.isdigit() else 1
+                    for a, d, *_ in (l.split("\t") for l in numstat.splitlines() if l.count("\t") >= 2))
+        hist = run["reviews"] or []
+        ran = [rv["plan"]["tier"] for rv in hist if rv.get("plan") and rv["plan"]["run"]]
+        plan = review_plan(c, changed, lines, issue["body"], reviewed=max(ran, key=TIERS.index, default=None))
+        log(f"review plan: {plan['tier'].upper()}{' ' + plan['model'] if plan['run'] else ''} ({plan['reason']})")
+        if not plan["run"]:
+            res = {"skipped": plan["reason"], "pass": True, "plan": plan}
+            run.set(reviews=hist + [res])
+            return res, [], []
         stat = out(["git", "diff", "--stat", rng, "--", ".", *ex], cwd=ws)
         diff = out(["git", "diff", "-U3", rng, "--", ".", *ex], cwd=ws)
-        changed = out(["git", "diff", "--name-only", rng, "--", ".", *ex], cwd=ws).splitlines()
         text = prompt("review", key=issue["key"], title=issue["title"], body=issue["body"] or "",
-                      conventions=kb.review_rules(c, ws, changed),
-                      gate_names=", ".join(g["name"] for g in map(gates._norm, c["gates"])),
-                      base=self.upstream, stat=stat,
+                      conventions=kb.review_rules(c, ws, changed), base=self.upstream, stat=stat,
                       diff=clip(diff, c["review"]["diff_chars"]) + (
                           "\n(diff truncated: Read the remaining files listed in the stat)" if len(diff) > c["review"]["diff_chars"] else ""))
-        res, _ = llm.claude(text, cwd=ws, step="review", model=c["models"]["review"], effort=c["effort"]["review"],
-                            schema=REVIEW_SCHEMA, lean=True, system=REVIEW_SYSTEM, tools=c["review"]["tools"],
+        res, _ = llm.claude(text, cwd=ws, step="review", model=plan["model"], effort=c["effort"]["review"],
+                            schema=REVIEW_SCHEMA, lean=True, system=review_system(c), tools=c["review"]["tools"],
                             budget=c["budget_usd"]["review"], timeout=c["loop"]["timeout_seconds"],
                             cost_log=run.cost_log, stream_log=run.dir / f"review-{len(run['reviews'] or []) + 1}.log")
         block = [f for f in res["findings"] if f["severity"] in c["review"]["block_on"]]
         unmet = [x for x in res["criteria"] if not x["met"]]
         res["pass"] = not block and not unmet
+        res["plan"] = plan
         log(f"review: {'PASS' if res['pass'] else 'FAIL'} ({len(block)} blocking, {len(unmet)} unmet criteria, "
             f"{len(res['findings']) - len(block)} minor)")
         hist = (run["reviews"] or []) + [res]
@@ -366,11 +420,15 @@ class Loop:
         if rep:
             parts += ["## Gates", "", "\n".join(f"- {'pass' if r['ok'] else 'FAIL'}: {r['name']}" for r in rep["results"]), ""]
         reviews = run["reviews"] or []
-        if c["pr"]["include_review"] and reviews:
+        if c["pr"]["include_review"] and reviews and reviews[-1].get("skipped"):
+            parts += ["## Automated review", "", f"Automated review skipped: {reviews[-1]['skipped']}", ""]
+        elif c["pr"]["include_review"] and reviews:
             last = reviews[-1]
+            plan = last.get("plan")
             minor = [f for f in last["findings"] if f["severity"] not in c["review"]["block_on"]]
             parts += ["## Automated review", "",
-                      f"{'Passed' if last.get('pass') else 'Not passed'} after {len(reviews)} round(s)."]
+                      f"{'Passed' if last.get('pass') else 'Not passed'} after {len(reviews)} round(s)"
+                      + (f", reviewed by {plan['model']} ({plan['reason']})." if plan else ".")]
             parts += [f"- [x] {x['criterion']}" if x["met"] else f"- [ ] {x['criterion']}" for x in last["criteria"]]
             if minor:
                 parts += ["", "Minor findings left for you:"] + [f"- `{f['file']}`: {f['issue']}" for f in minor]

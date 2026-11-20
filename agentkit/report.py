@@ -8,7 +8,9 @@ from .util import read_json, read_jsonl
 
 TOKENS = ("in", "cache_r", "out")
 HOOKS = ("hook_calls", "edit_blocks", "stop_blocks", "guard_blocks", "hook_errors")
-METRICS = ("usd", "calls", "fix_rounds", "review_rounds", *HOOKS, *TOKENS)  # summed in "total", compared by the benchmark
+REVIEWS = ("review_skipped", "review_light", "review_full", "review_usd", "review_in", "review_cache_r")
+MONEY = ("usd", "review_usd")  # shown with two decimals
+METRICS = ("usd", "calls", "fix_rounds", "review_rounds", *REVIEWS, *HOOKS, *TOKENS)  # summed in "total", compared by the benchmark
 
 
 def _gates(state):
@@ -23,6 +25,15 @@ def hook_counts(rows, state):
         return sum(1 for r in mine if (event is None or r.get("event") == event) and r.get("outcome") == outcome)
     return {"hook_calls": len(mine), "edit_blocks": n("post-edit", hook_log.BLOCK),
             "stop_blocks": n("stop", hook_log.BLOCK), "guard_blocks": n("guard", hook_log.BLOCK), "hook_errors": n(None, hook_log.ERROR)}
+
+
+def review_counts(state, calls):
+    """Review decisions (the plan on each state.json review) by tier, and what the review calls cost."""
+    tiers = [rv["plan"].get("tier") for rv in state.get("reviews") or [] if rv.get("plan")]
+    rv = [c for c in calls if step_kind(c) == "review"]
+    return {"review_skipped": tiers.count("skip"), "review_light": tiers.count("light"),
+            "review_full": tiers.count("full"), "review_usd": round(sum(c.get("usd") or 0 for c in rv), 4),
+            "review_in": sum(c.get("in") or 0 for c in rv), "review_cache_r": sum(c.get("cache_r") or 0 for c in rv)}
 
 
 def collect(runs_dir, since=None):
@@ -44,6 +55,7 @@ def collect(runs_dir, since=None):
             "calls": len(calls), "fix_rounds": steps.count("fix-gates"), "review_rounds": steps.count("review"),
             "gates": _gates(state),
         }
+        row.update(review_counts(state, calls))
         row.update(hook_counts(hook_rows, state))
         row.update({t: sum(c.get(t) or 0 for c in calls) for t in TOKENS})
         rows.append(row)
@@ -52,7 +64,9 @@ def collect(runs_dir, since=None):
 
 
 COLUMNS = [("ticket", "key"), ("status", "status"), ("usd", "usd"), ("calls", "calls"), ("fix", "fix_rounds"),
-           ("review", "review_rounds"), ("gates", "gates"),
+           ("review", "review_rounds"), ("rv_skip", "review_skipped"), ("rv_light", "review_light"),
+           ("rv_full", "review_full"), ("rv_usd", "review_usd"), ("rv_in", "review_in"),
+           ("rv_cache_r", "review_cache_r"), ("gates", "gates"),
            ("hooks", "hook_calls"), ("edit_blk", "edit_blocks"), ("stop_blk", "stop_blocks"), ("guard_blk", "guard_blocks"), ("hook_err", "hook_errors"), *((t, t) for t in TOKENS)]
 
 
@@ -60,7 +74,7 @@ def render(rep):
     if not rep["rows"]:
         return "no runs"
     def cells(row):
-        return [f"{row[k]:.2f}" if k == "usd" else str(row.get(k, "")) for _, k in COLUMNS]
+        return [f"{row[k]:.2f}" if k in MONEY else str(row.get(k, "")) for _, k in COLUMNS]
     table = [[h for h, _ in COLUMNS], *map(cells, rep["rows"]), cells({**rep["total"], "key": "total"})]
     widths = [max(len(r[i]) for r in table) for i in range(len(COLUMNS))]
     return "\n".join("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip() for r in table)
