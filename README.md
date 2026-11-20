@@ -51,11 +51,12 @@ are local.
 | context pack from `.knowledge/` (FTS5 search + import graph + past tickets + gotchas) | script |
 | implement | LLM (full Claude Code, scoped tools and Bash allowlist) |
 | autofix (formatters), then gates; failures compacted to the relevant lines | script |
-| fix gate failures, up to `loop.max_fix_rounds` | LLM, same session resumed |
+| fix gate failures, up to `loop.max_fix_rounds` (the last one on `models.escalate`, if set) | LLM, same session resumed |
 | commit | script |
+| red/green (`loop.tdd`, opt-in): the branch's new tests run on a base worktree, must fail there | script |
 | review plan: skip (docs only, or small and no acceptance criteria), light or full model | script |
 | review: spec criteria + findings, diff only, lean system prompt, Read tools | LLM (unless skipped) |
-| fix blocking findings, up to `loop.max_review_rounds` | LLM, same session resumed |
+| fix blocking findings (and red/green problems), up to `loop.max_review_rounds` (last one escalated) | LLM, same session resumed |
 | ticket note, lessons into gotchas/conventions, kb update, commit | script (+ LLM summaries for new files) |
 | push, PR with `Closes #N`, gates, review result, concerns | script |
 
@@ -139,6 +140,24 @@ Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
   e.g. `["**/auth/**", "**/migrations/**"]`), `light_max_lines` (default `300`). Models:
   `models.review` (default `opus`) and `models.review_light` (default `sonnet`); both use
   `budget_usd.review`. Globs as for rules: `*` crosses folders, `**/x` also matches `x`.
+- `loop.tdd` (opt-in, `enabled: false`): after the gates pass, the test files the branch added or
+  changed (matching `test_paths`, default `["tests/**", "**/*_test.*", "**/test_*.*", "**/*.test.*",
+  "**/*.spec.*"]`) are copied into a temporary worktree at `origin/<base>` (system temp dir,
+  `workspace.setup` runs there first, always removed afterwards) and the test gate runs: `gate` by
+  name, or `null` = the first gate whose name contains "test". Failing there is the goal (`red`).
+  Passing there (`passes_on_base`), or no test files changed when not every file matches
+  `review.skip_paths` (`no_tests`), adds a `major` finding to the review, even a skipped one, so the
+  normal review-fix round handles it. Any failure on the base counts as red, including an import
+  error of a new helper. Deleted tests are not copied. No gate found or setup failing on the base:
+  `skipped` with the reason (`doctor` fails on a gate it cannot resolve). Shown in the run log
+  (`tdd: RED ...`), `state.json` (`tdd`, all checks in `tdd_checks`), `agent-kit log <n>` (`## tdd`),
+  `agent-kit report` (`tdd`) and the PR's Gates section (`Tests: red on base -> green on branch`).
+  No LLM; it costs one extra test run per review round.
+- `models.escalate` (default `null`, e.g. `"opus"`): the model for the last gate-fix round
+  (`fix_round == loop.max_fix_rounds`) and the last review-fix round (`== loop.max_review_rounds`).
+  The session is resumed with `--model`, so it keeps its context; the new model has no cache for it,
+  so that round pays the cache write once. Logged (`escalate: ...`), in `state.json` (`escalations`),
+  `agent-kit log <n>` (`## escalations`), `agent-kit report` (`escal`) and per call in `cost.jsonl` (`model`).
 - Hooks do nothing in repos without `.agent/config.json`. Gates in hooks cost no tokens; Claude
   reads the compacted failure output in its session.
 

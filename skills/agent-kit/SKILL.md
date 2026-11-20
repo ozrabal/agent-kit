@@ -47,8 +47,10 @@ curl | sh, gh pr merge). A block is not an error to work around: do what the mes
 - `agent-kit doctor`: checks tools, auth, config, labels, base branch, gates and knowledge base, with a
   fix hint for each failure. Run it first when a run fails for setup reasons.
 - `agent-kit status`: ready and blocked tickets, running PRs and their cost.
-- `agent-kit report [--json] [--since <ts>]`: cost, tokens, fix and review rounds, review decisions (skipped / light / full) and hook blocks
-  per ticket run.
+- `agent-kit report [--json] [--since <ts>]`: cost, tokens, fix and review rounds, escalated rounds, red/green
+  result, review decisions (skipped / light / full) and hook blocks per ticket run.
+- With `loop.tdd.enabled`, the tests you add must fail on the base branch: they are run there with the
+  old code, and tests that pass without your change (or no tests) come back as a review finding.
 - `agent-kit run [--ticket N] [--wait] [--max N] [--dry-run]`: one ticket at a time, dependency
   aware; pauses for the human to merge each PR. `--wait` polls for the merge without LLM cost.
 - Run state and cost logs: `.agent/runs/<issue>/` (`state.json`, `cost.jsonl`, `pr.md`, `context.md`,

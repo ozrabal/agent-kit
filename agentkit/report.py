@@ -10,7 +10,7 @@ TOKENS = ("in", "cache_r", "out")
 HOOKS = ("hook_calls", "edit_blocks", "stop_blocks", "guard_blocks", "hook_errors")
 REVIEWS = ("review_skipped", "review_light", "review_full", "review_usd", "review_in", "review_cache_r")
 MONEY = ("usd", "review_usd")  # shown with two decimals
-METRICS = ("usd", "calls", "fix_rounds", "review_rounds", *REVIEWS, *HOOKS, *TOKENS)  # summed in "total", compared by the benchmark
+METRICS = ("usd", "calls", "fix_rounds", "review_rounds", "escalated", *REVIEWS, *HOOKS, *TOKENS)  # summed in "total", compared by the benchmark
 
 
 def _gates(state):
@@ -53,7 +53,8 @@ def collect(runs_dir, since=None):
             "ticket": int(d.name), "key": state.get("key") or f"#{d.name}", "title": state.get("title") or "",
             "status": state.get("status") or "-", "usd": round(sum(c.get("usd") or 0 for c in calls), 4),
             "calls": len(calls), "fix_rounds": steps.count("fix-gates"), "review_rounds": steps.count("review"),
-            "gates": _gates(state),
+            "gates": _gates(state), "tdd": (state.get("tdd") or {}).get("status") or "-",
+            "escalated": len(state.get("escalations") or []),
         }
         row.update(review_counts(state, calls))
         row.update(hook_counts(hook_rows, state))
@@ -64,10 +65,24 @@ def collect(runs_dir, since=None):
 
 
 COLUMNS = [("ticket", "key"), ("status", "status"), ("usd", "usd"), ("calls", "calls"), ("fix", "fix_rounds"),
-           ("review", "review_rounds"), ("rv_skip", "review_skipped"), ("rv_light", "review_light"),
+           ("review", "review_rounds"), ("escal", "escalated"), ("rv_skip", "review_skipped"), ("rv_light", "review_light"),
            ("rv_full", "review_full"), ("rv_usd", "review_usd"), ("rv_in", "review_in"),
-           ("rv_cache_r", "review_cache_r"), ("gates", "gates"),
+           ("rv_cache_r", "review_cache_r"), ("gates", "gates"), ("tdd", "tdd"),
            ("hooks", "hook_calls"), ("edit_blk", "edit_blocks"), ("stop_blk", "stop_blocks"), ("guard_blk", "guard_blocks"), ("hook_err", "hook_errors"), *((t, t) for t in TOKENS)]
+
+
+def run_lines(state):
+    """`agent-kit log` lines for a run's red/green checks and escalated fix rounds."""
+    lines = []
+    if state.get("tdd_checks"):
+        lines.append("## tdd")
+        lines += [f"{i}. {t['status'].upper()}{' gate ' + t['gate'] if t.get('gate') else ''}, {t['secs']}s: "
+                  f"{t['reason']}" + (f" ({', '.join(t['files'])})" if t.get("files") else "")
+                  for i, t in enumerate(state["tdd_checks"], 1)]
+    if state.get("escalations"):
+        lines.append("## escalations")
+        lines += [f"{e['step']} -> {e['model']}: {e['reason']}" for e in state["escalations"]]
+    return lines
 
 
 def render(rep):

@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from string import Template
 
-from . import gates, hooks, kb, llm
+from . import gates, hooks, kb, llm, tdd
 from .config import FIXING_REVIEW, IMPLEMENTING, READ_ONLY_BASH, fmt, runs_dir
 from .tracker import make
 from .util import KIT_DIR, clip, log, out, read_json, sh, slug, write_json
@@ -140,9 +140,16 @@ def _plan(cfg, changed, diff_lines, body):
             "tier": "light"}
 
 
+def fix_model(cfg, rnd, last):
+    """The model for fix round rnd of last: models.escalate on the last round when set, else models.implement."""
+    m = cfg["models"]
+    return m["escalate"] if m["escalate"] and rnd == last else m["implement"]
+
+
 class Loop:
-    def __init__(self, cfg):
+    def __init__(self, cfg, claude=llm.claude):
         self.cfg = cfg
+        self.claude = claude  # tests pass a fake
         self.root = Path(cfg["_root"])
         self.tr = make(cfg)
         self.base = cfg["branch"]["base"]
@@ -251,11 +258,11 @@ class Loop:
             rules.append(" ".join(cmd.split()[:2]) + " *")
         return [f"Bash({r})" for r in dict.fromkeys(rules)]
 
-    def _impl(self, run, ws, text, step, resume=None):
+    def _impl(self, run, ws, text, step, resume=None, model=None):
         c = self.cfg
         with hooks.watch(c, ws, step):  # print the session's hook calls live
-            res, sid = llm.claude(
-                text, cwd=ws, step=step, model=c["models"]["implement"], effort=c["effort"]["implement"],
+            res, sid = self.claude(
+                text, cwd=ws, step=step, model=model or c["models"]["implement"], effort=c["effort"]["implement"],
                 schema=IMPL_SCHEMA, tools=c["implement"]["tools"], permission_mode=c["implement"]["permission_mode"],
                 allow=self._allow(), budget=c["budget_usd"]["fix" if resume else "implement"], resume=resume,
                 persist=True, timeout=c["loop"]["timeout_seconds"], cost_log=run.cost_log,
@@ -287,7 +294,7 @@ class Loop:
                       conventions=kb.review_rules(c, ws, changed), base=self.upstream, stat=stat,
                       diff=clip(diff, c["review"]["diff_chars"]) + (
                           "\n(diff truncated: Read the remaining files listed in the stat)" if len(diff) > c["review"]["diff_chars"] else ""))
-        res, _ = llm.claude(text, cwd=ws, step="review", model=plan["model"], effort=c["effort"]["review"],
+        res, _ = self.claude(text, cwd=ws, step="review", model=plan["model"], effort=c["effort"]["review"],
                             schema=REVIEW_SCHEMA, lean=True, system=review_system(c), tools=c["review"]["tools"],
                             budget=c["budget_usd"]["review"], timeout=c["loop"]["timeout_seconds"],
                             cost_log=run.cost_log, stream_log=run.dir / f"review-{len(run['reviews'] or []) + 1}.log")
@@ -344,6 +351,32 @@ class Loop:
             return False
         return self._ship(run, ws, issue, impl, failure)
 
+    def _fix(self, run, ws, text, step, rnd, limit):
+        """A resumed fix round; the last allowed one (rnd == the loop.<limit> value) may use models.escalate."""
+        last = self.cfg["loop"][limit]
+        model = fix_model(self.cfg, rnd, last)
+        if model != self.cfg["models"]["implement"]:
+            kind = "gate-fix" if step.startswith("fix-gates") else "review-fix"
+            esc = {"step": step, "round": rnd, "model": model, "reason": f"last {kind} round (loop.{limit}={last})"}
+            run.set(escalations=(run["escalations"] or []) + [esc])
+            log(f"escalate: {step} uses {model} ({esc['reason']})")
+        self._impl(run, ws, text, step, resume=run["session"], model=model)
+
+    def _tdd(self, run, ws, rv, block):
+        """Red/green check; a result that does not prove the change becomes a blocking finding on rv."""
+        res = tdd.check(self.cfg, ws, self.upstream)
+        run.set(tdd=res, tdd_checks=(run["tdd_checks"] or []) + ([res] if res else []))
+        if not res:
+            return
+        log(f"tdd: {res['status'].upper()} ({res['reason']}"
+            + (f"; {len(res['files'])} test file(s), gate {res['gate']}" if res["files"] else "") + f", {res['secs']}s)")
+        f = tdd.finding(res)
+        if f:
+            rv["findings"] = (rv.get("findings") or []) + [f]
+            rv["pass"] = False
+            block.append(f)
+            run.set(reviews=(run["reviews"] or [])[:-1] + [rv])
+
     def _quality_rounds(self, run, ws, issue):
         c, key = self.cfg, issue["key"]
         review_round = 0
@@ -355,8 +388,8 @@ class Loop:
                 fix_round += 1
                 run.set(fix_rounds=run["fix_rounds"] + 1)
                 details = gates.render({"results": [r for r in rep["results"] if not r["ok"]]})
-                self._impl(run, ws, prompt("fix", key=key, reason="These gates fail:", details=details),
-                           f"fix-gates:{fix_round}", resume=run["session"])
+                self._fix(run, ws, prompt("fix", key=key, reason="These gates fail:", details=details),
+                          f"fix-gates:{fix_round}", fix_round, "max_fix_rounds")
                 rep = self._gates(ws)
             run.set(gates=rep)
             if not rep["ok"]:
@@ -364,15 +397,16 @@ class Loop:
             self._commit(ws, f"{key}: {issue['title'].split(':', 1)[-1].strip()}" if review_round == 0
                          else f"{key}: address review round {review_round}")
             rv, block, unmet = self._review(run, ws, issue)
+            self._tdd(run, ws, rv, block)
             if rv["pass"]:
                 return None
             if review_round >= c["loop"]["max_review_rounds"]:
                 return {"reason": "review still failing after fix rounds", "details": _findings_md(block, unmet)}
             review_round += 1
             run.set(status=f"{FIXING_REVIEW}{review_round}")
-            self._impl(run, ws, prompt("fix", key=key, reason="Code review found problems:",
-                                       details=_findings_md(block, unmet)),
-                       f"fix-review:{review_round}", resume=run["session"])
+            self._fix(run, ws, prompt("fix", key=key, reason="Code review found problems:",
+                                      details=_findings_md(block, unmet)),
+                      f"fix-review:{review_round}", review_round, "max_review_rounds")
 
     def _ship(self, run, ws, issue, impl, failure):
         c, n, key = self.cfg, issue["number"], issue["key"]
@@ -416,9 +450,10 @@ class Loop:
         secs = {s["heading"].strip().lstrip("#").strip().lower(): s["body"] for s in impl.get("pr_sections", [])}
         for h in c["pr"]["sections"]:
             parts += [f"## {h}", "", secs.get(h.lower(), impl.get("summary", "") if h.lower() == "summary" else "-"), ""]
-        rep = run["gates"]
-        if rep:
-            parts += ["## Gates", "", "\n".join(f"- {'pass' if r['ok'] else 'FAIL'}: {r['name']}" for r in rep["results"]), ""]
+        rep, tests = run["gates"], [f"- {tdd.line(run['tdd'])}"] if run["tdd"] else []
+        if rep or tests:
+            parts += ["## Gates", "", "\n".join([*(f"- {'pass' if r['ok'] else 'FAIL'}: {r['name']}"
+                                                  for r in (rep or {}).get("results", [])), *tests]), ""]
         reviews = run["reviews"] or []
         if c["pr"]["include_review"] and reviews and reviews[-1].get("skipped"):
             parts += ["## Automated review", "", f"Automated review skipped: {reviews[-1]['skipped']}", ""]

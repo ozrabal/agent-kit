@@ -41,8 +41,15 @@ DEFAULTS = {
         ],
     },
     "merge": {"policy": "pause", "max_open_prs": 1, "poll_seconds": 120},
-    "loop": {"max_fix_rounds": 2, "max_review_rounds": 2, "timeout_seconds": 3600},
-    "models": {"implement": "sonnet", "review": "opus", "review_light": "sonnet", "summarize": "haiku"},
+    "loop": {
+        "max_fix_rounds": 2, "max_review_rounds": 2, "timeout_seconds": 3600,
+        # red/green: the branch's new tests must fail on the base; gate null = first gate named *test*
+        "tdd": {"enabled": False, "gate": None,
+                "test_paths": ["tests/**", "**/*_test.*", "**/test_*.*", "**/*.test.*", "**/*.spec.*"]},
+    },
+    # escalate: model for the last gate-fix and the last review-fix round (null = models.implement)
+    "models": {"implement": "sonnet", "review": "opus", "review_light": "sonnet", "summarize": "haiku",
+               "escalate": None},
     "effort": {"implement": None, "review": None, "summarize": "low"},
     "budget_usd": {"implement": 8, "fix": 3, "review": 3, "summarize": 0.5},
     "implement": {
