@@ -39,6 +39,13 @@ class PrBody(unittest.TestCase):
                       pr_body({"status": "no_tests", "reason": "no test files added or changed", "files": []}))
         self.assertIn("- Tests: skipped: docs only\n", pr_body({"status": "skipped", "reason": "docs only", "files": []}))
 
+    def test_skipped_review_failed_by_tdd(self):
+        lp = Loop.__new__(Loop)
+        lp.cfg = copy.deepcopy(DEFAULTS)
+        rv = {"skipped": "docs only", "pass": False, "plan": {"run": False}, "findings": []}
+        body = lp._pr_body({"number": 7}, {"summary": "s"}, {"gates": GATES, "reviews": [rv], "tdd": WEAK}, None)
+        self.assertIn("Automated review skipped: docs only; failed by the red/green check\n", body)
+
     def test_off(self):
         self.assertNotIn("Tests:", pr_body(None))
 

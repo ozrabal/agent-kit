@@ -137,6 +137,11 @@ def matches(path, globs):
     return any(fnmatch.fnmatch(path, g) or (g.startswith("**/") and fnmatch.fnmatch(path, g[3:])) for g in globs)
 
 
+def docs_only(changed, skip_paths):
+    """True when there are changed paths and every one matches skip_paths (review.skip_paths)."""
+    return bool(changed) and all(matches(p, skip_paths) for p in changed)
+
+
 def load_rules(cfg, cwd):
     d = kdir(cfg, cwd) / "rules"
     return [parse_rule(f.read_text(), f.stem) for f in sorted(d.glob("*.md"))] if d.is_dir() else []

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agentkit import tdd  # noqa: E402
 from agentkit.config import DEFAULTS  # noqa: E402
-from agentkit.loop import Loop, Run, fix_model  # noqa: E402
+from agentkit.loop import Loop, Run, _pathspec_excludes, fix_model  # noqa: E402
 
 PATHS = DEFAULTS["loop"]["tdd"]["test_paths"]
 
@@ -115,7 +115,8 @@ class Check(unittest.TestCase):
         setup = t.pop("setup", [])
         c = {**cfg([GATE], enabled=True, **t), "_root": str(self.repo), "review": DEFAULTS["review"],
              "workspace": {**DEFAULTS["workspace"], "setup": setup}}
-        return tdd.check(c, self.repo, "base", **({"run_one": run_one} if run_one else {}))
+        ex = _pathspec_excludes(DEFAULTS["review"]["exclude"])
+        return tdd.check(c, self.repo, "base", ex, **({"run_one": run_one} if run_one else {}))
 
     def worktrees(self):
         return git(self.repo, "worktree", "list").count("\n")
@@ -138,6 +139,10 @@ class Check(unittest.TestCase):
         self.write({"README.md": "y\n"})
         r = self.check()
         self.assertEqual((r["status"], r["reason"]), ("skipped", "docs only"))
+
+    def test_docs_and_excluded_files_are_docs_only(self):
+        self.write({"README.md": "y\n", "poetry.lock": "z\n"})
+        self.assertEqual(self.check()["reason"], "docs only")
 
     def test_deleted_test_is_not_copied(self):
         self.write({"tests/test_old.py": WEAK})
@@ -235,7 +240,7 @@ class Rounds(unittest.TestCase):
         self.assertEqual(run["tdd"]["status"], "red")
         self.assertEqual([t["status"] for t in run["tdd_checks"]], ["passes_on_base", "red"])
         self.assertEqual(run["escalations"], [{"step": "fix-review:1", "round": 1, "model": "opus",
-                                               "reason": "last review-fix round (loop.max_review_rounds=1)"}])
+                                               "reason": "last review-fix round (1 of 1)"}])
 
     def test_gate_fix_escalates_only_on_the_last_round(self):
         self.write({"app.py": NEW, "tests/test_app.py": PROVES.replace("2)", "30)")})

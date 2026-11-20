@@ -25,8 +25,9 @@ def gate(cfg):
     return None
 
 
-def check(cfg, ws, upstream, run_one=gates.run_one):
+def check(cfg, ws, upstream, exclude=(), run_one=gates.run_one):
     """Run the branch's added or changed test files on a temporary worktree at upstream.
+    exclude: git pathspecs the review leaves out (loop._pathspec_excludes), so "docs only" agrees with it.
     None when loop.tdd is off, else {status, reason, files, gate, secs}; status is one of
     red (fails on base: good), passes_on_base, no_tests, skipped. The worktree is always removed."""
     if not cfg["loop"]["tdd"]["enabled"]:
@@ -42,11 +43,11 @@ def check(cfg, ws, upstream, run_one=gates.run_one):
         name = cfg["loop"]["tdd"]["gate"]
         return res("skipped", f"no gate named {name}" if name else "no gate name contains 'test' (set loop.tdd.gate)")
     rng = f"{upstream}...HEAD"
-    changed = out(["git", "diff", "--name-only", rng], cwd=ws).splitlines()
+    changed = out(["git", "diff", "--name-only", rng, "--", ".", *exclude], cwd=ws).splitlines()
     files = test_files(out(["git", "diff", "--name-only", "--diff-filter=AMR", rng], cwd=ws).splitlines(),
                        cfg["loop"]["tdd"]["test_paths"])
     if not files:
-        if changed and all(kb.matches(p, cfg["review"]["skip_paths"]) for p in changed):
+        if kb.docs_only(changed, cfg["review"]["skip_paths"]):
             return res("skipped", "docs only", g=g)
         return res("no_tests", "no test files added or changed", g=g)
     base = Path(tempfile.mkdtemp(prefix="agent-kit-tdd-")) / "base"

@@ -123,7 +123,7 @@ def review_plan(cfg, changed, diff_lines, body="", reviewed=None):
 
 def _plan(cfg, changed, diff_lines, body):
     r, m = cfg["review"], cfg["models"]
-    if changed and all(kb.matches(p, r["skip_paths"]) for p in changed):
+    if kb.docs_only(changed, r["skip_paths"]):
         return {"run": False, "model": None, "reason": "docs only", "tier": "skip"}
     risky = next((p for p in changed if r["risky_paths"] and kb.matches(p, r["risky_paths"])), None)
     if risky:
@@ -351,20 +351,18 @@ class Loop:
             return False
         return self._ship(run, ws, issue, impl, failure)
 
-    def _fix(self, run, ws, text, step, rnd, limit):
-        """A resumed fix round; the last allowed one (rnd == the loop.<limit> value) may use models.escalate."""
-        last = self.cfg["loop"][limit]
+    def _fix(self, run, ws, text, step, rnd, last, kind):
+        """A resumed fix round; the last allowed one (rnd == last) may use models.escalate."""
         model = fix_model(self.cfg, rnd, last)
         if model != self.cfg["models"]["implement"]:
-            kind = "gate-fix" if step.startswith("fix-gates") else "review-fix"
-            esc = {"step": step, "round": rnd, "model": model, "reason": f"last {kind} round (loop.{limit}={last})"}
+            esc = {"step": step, "round": rnd, "model": model, "reason": f"last {kind} round ({rnd} of {last})"}
             run.set(escalations=(run["escalations"] or []) + [esc])
             log(f"escalate: {step} uses {model} ({esc['reason']})")
         self._impl(run, ws, text, step, resume=run["session"], model=model)
 
     def _tdd(self, run, ws, rv, block):
         """Red/green check; a result that does not prove the change becomes a blocking finding on rv."""
-        res = tdd.check(self.cfg, ws, self.upstream)
+        res = tdd.check(self.cfg, ws, self.upstream, _pathspec_excludes(self.cfg["review"]["exclude"]))
         run.set(tdd=res, tdd_checks=(run["tdd_checks"] or []) + ([res] if res else []))
         if not res:
             return
@@ -389,7 +387,7 @@ class Loop:
                 run.set(fix_rounds=run["fix_rounds"] + 1)
                 details = gates.render({"results": [r for r in rep["results"] if not r["ok"]]})
                 self._fix(run, ws, prompt("fix", key=key, reason="These gates fail:", details=details),
-                          f"fix-gates:{fix_round}", fix_round, "max_fix_rounds")
+                          f"fix-gates:{fix_round}", fix_round, c["loop"]["max_fix_rounds"], "gate-fix")
                 rep = self._gates(ws)
             run.set(gates=rep)
             if not rep["ok"]:
@@ -406,7 +404,7 @@ class Loop:
             run.set(status=f"{FIXING_REVIEW}{review_round}")
             self._fix(run, ws, prompt("fix", key=key, reason="Code review found problems:",
                                       details=_findings_md(block, unmet)),
-                      f"fix-review:{review_round}", review_round, "max_review_rounds")
+                      f"fix-review:{review_round}", review_round, c["loop"]["max_review_rounds"], "review-fix")
 
     def _ship(self, run, ws, issue, impl, failure):
         c, n, key = self.cfg, issue["number"], issue["key"]
@@ -450,13 +448,16 @@ class Loop:
         secs = {s["heading"].strip().lstrip("#").strip().lower(): s["body"] for s in impl.get("pr_sections", [])}
         for h in c["pr"]["sections"]:
             parts += [f"## {h}", "", secs.get(h.lower(), impl.get("summary", "") if h.lower() == "summary" else "-"), ""]
-        rep, tests = run["gates"], [f"- {tdd.line(run['tdd'])}"] if run["tdd"] else []
-        if rep or tests:
-            parts += ["## Gates", "", "\n".join([*(f"- {'pass' if r['ok'] else 'FAIL'}: {r['name']}"
-                                                  for r in (rep or {}).get("results", [])), *tests]), ""]
+        rep = run["gates"]
+        lines = [f"- {'pass' if r['ok'] else 'FAIL'}: {r['name']}" for r in (rep or {}).get("results", [])]
+        if run["tdd"]:
+            lines.append(f"- {tdd.line(run['tdd'])}")
+        if lines:
+            parts += ["## Gates", "", "\n".join(lines), ""]
         reviews = run["reviews"] or []
         if c["pr"]["include_review"] and reviews and reviews[-1].get("skipped"):
-            parts += ["## Automated review", "", f"Automated review skipped: {reviews[-1]['skipped']}", ""]
+            parts += ["## Automated review", "", f"Automated review skipped: {reviews[-1]['skipped']}"
+                      + ("" if reviews[-1].get("pass", True) else "; failed by the red/green check"), ""]
         elif c["pr"]["include_review"] and reviews:
             last = reviews[-1]
             plan = last.get("plan")

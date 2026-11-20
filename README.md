@@ -152,7 +152,9 @@ Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
   `skipped` with the reason (`doctor` fails on a gate it cannot resolve). Shown in the run log
   (`tdd: RED ...`), `state.json` (`tdd`, all checks in `tdd_checks`), `agent-kit log <n>` (`## tdd`),
   `agent-kit report` (`tdd`) and the PR's Gates section (`Tests: red on base -> green on branch`).
-  No LLM; it costs one extra test run per review round.
+  The finding blocks even if `major` is not in `review.block_on`. No LLM; it runs after every
+  review round (a fix may change the tests), so each round pays one base test run plus
+  `workspace.setup` in the temporary worktree.
 - `models.escalate` (default `null`, e.g. `"opus"`): the model for the last gate-fix round
   (`fix_round == loop.max_fix_rounds`) and the last review-fix round (`== loop.max_review_rounds`).
   The session is resumed with `--model`, so it keeps its context; the new model has no cache for it,
