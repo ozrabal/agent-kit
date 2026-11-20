@@ -15,7 +15,7 @@ from pathlib import Path
 from string import Template
 
 from . import gates, hooks, kb, llm
-from .config import READ_ONLY_BASH, fmt, runs_dir
+from .config import FIXING_REVIEW, IMPLEMENTING, READ_ONLY_BASH, fmt, runs_dir
 from .tracker import make
 from .util import KIT_DIR, clip, log, out, read_json, sh, slug, write_json
 
@@ -227,9 +227,9 @@ class Loop:
         rng = f"{self.upstream}...HEAD"
         stat = out(["git", "diff", "--stat", rng, "--", ".", *ex], cwd=ws)
         diff = out(["git", "diff", "-U3", rng, "--", ".", *ex], cwd=ws)
-        conv = kb.kdir(c, ws) / "conventions.md"
+        changed = out(["git", "diff", "--name-only", rng, "--", ".", *ex], cwd=ws).splitlines()
         text = prompt("review", key=issue["key"], title=issue["title"], body=issue["body"] or "",
-                      conventions=conv.read_text() if conv.exists() else "(none recorded)",
+                      conventions=kb.review_rules(c, ws, changed),
                       gate_names=", ".join(g["name"] for g in map(gates._norm, c["gates"])),
                       base=self.upstream, stat=stat,
                       diff=clip(diff, c["review"]["diff_chars"]) + (
@@ -264,7 +264,7 @@ class Loop:
             return True
 
         log(f"=== {key} (#{n}): {issue['title']}")
-        run.set(key=key, title=issue["title"], status="implementing")
+        run.set(key=key, title=issue["title"], status=IMPLEMENTING)
         (run.dir / "context.md").write_text(ctx)
         if c["tracker"]["labels"]["wip"] not in self.tr.get(n)["labels"]:
             self.tr.set_status(n, "ready", "wip")
@@ -315,7 +315,7 @@ class Loop:
             if review_round >= c["loop"]["max_review_rounds"]:
                 return {"reason": "review still failing after fix rounds", "details": _findings_md(block, unmet)}
             review_round += 1
-            run.set(status=f"fixing-review-{review_round}")
+            run.set(status=f"{FIXING_REVIEW}{review_round}")
             self._impl(run, ws, prompt("fix", key=key, reason="Code review found problems:",
                                        details=_findings_md(block, unmet)),
                        f"fix-review:{review_round}", resume=run["session"])

@@ -106,20 +106,25 @@ def check_knowledge_base(ctx):
 
 
 def check_hooks(ctx):
-    if not ctx.cfg["hooks"]["stop_gate"]:
-        return []
     paths = [hooks.settings_path(ctx.cfg["_root"]), ctx.user_settings]
-    if any(hooks.installed(read_json(p, {})) for p in paths):
+    gaps = [hooks.missing(read_json(p, {})) for p in paths]  # per settings file
+    if not all(gaps):  # one file has every hook
         return [result("hooks", True)]
-    return [warning("hooks", "hooks.stop_gate is on but the hooks are not installed: run "
+    closest = min(gaps, key=len)
+    return [warning("hooks", "agent-kit hooks missing for " + ", ".join(closest) + ": run "
                     "`agent-kit hooks install` and commit .claude/settings.json")]
+
+
+def _recent(ctx, keep):
+    """Hook log rows within hooks.error_window_hours that keep(row) accepts, and the window in hours."""
+    hours = ctx.cfg["hooks"]["error_window_hours"]
+    since = time.time() - hours * 3600
+    return [r for r in hooks.read_rows(ctx.cfg) if keep(r) and (r.get("ts") or 0) >= since], hours
 
 
 def check_hook_errors(ctx):
     """Hooks never fail a session; their internal errors only show up in .agent/runs/hooks.jsonl."""
-    hours = ctx.cfg["hooks"]["error_window_hours"]
-    since = time.time() - hours * 3600
-    errs = [r for r in hooks.read_rows(ctx.cfg) if r.get("outcome") == hooks.ERROR and (r.get("ts") or 0) >= since]
+    errs, hours = _recent(ctx, lambda r: r.get("outcome") == hooks.ERROR)
     if not errs:
         return [result("hook errors", True)]
     last = errs[-1]
@@ -127,9 +132,19 @@ def check_hook_errors(ctx):
                                    f"{last.get('cwd') or '?'}): {last.get('note')}")]
 
 
+def check_guard(ctx):
+    """Guard denials are not errors, but each one is a session that tried to leave its scope."""
+    denied, hours = _recent(ctx, lambda r: r.get("event") == "guard" and r.get("outcome") == hooks.BLOCK)
+    if not denied:
+        return [result("guard denials", True)]
+    last = denied[-1]
+    return [warning("guard denials", f"{len(denied)} in the last {hours}h; latest in {last.get('cwd') or '?'}: "
+                                     f"{last.get('note')} (`agent-kit log <issue>` shows the run)")]
+
+
 CHECKS = [check_tools, check_python, check_gh_auth, check_config, check_labels, check_base_branch,
           check_gates, check_knowledge_base, check_hooks,
-          check_hook_errors]
+          check_hook_errors, check_guard]
 
 
 class Ctx:

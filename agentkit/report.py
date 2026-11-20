@@ -7,7 +7,7 @@ from .llm import step_kind
 from .util import read_json, read_jsonl
 
 TOKENS = ("in", "cache_r", "out")
-HOOKS = ("hook_calls", "edit_blocks", "stop_blocks", "hook_errors")
+HOOKS = ("hook_calls", "edit_blocks", "stop_blocks", "guard_blocks", "hook_errors")
 METRICS = ("usd", "calls", "fix_rounds", "review_rounds", *HOOKS, *TOKENS)  # summed in "total", compared by the benchmark
 
 
@@ -22,7 +22,7 @@ def hook_counts(rows, state):
     def n(event, outcome):
         return sum(1 for r in mine if (event is None or r.get("event") == event) and r.get("outcome") == outcome)
     return {"hook_calls": len(mine), "edit_blocks": n("post-edit", hook_log.BLOCK),
-            "stop_blocks": n("stop", hook_log.BLOCK), "hook_errors": n(None, hook_log.ERROR)}
+            "stop_blocks": n("stop", hook_log.BLOCK), "guard_blocks": n("guard", hook_log.BLOCK), "hook_errors": n(None, hook_log.ERROR)}
 
 
 def collect(runs_dir, since=None):
@@ -53,7 +53,7 @@ def collect(runs_dir, since=None):
 
 COLUMNS = [("ticket", "key"), ("status", "status"), ("usd", "usd"), ("calls", "calls"), ("fix", "fix_rounds"),
            ("review", "review_rounds"), ("gates", "gates"),
-           ("hooks", "hook_calls"), ("edit_blk", "edit_blocks"), ("stop_blk", "stop_blocks"), ("hook_err", "hook_errors"), *((t, t) for t in TOKENS)]
+           ("hooks", "hook_calls"), ("edit_blk", "edit_blocks"), ("stop_blk", "stop_blocks"), ("guard_blk", "guard_blocks"), ("hook_err", "hook_errors"), *((t, t) for t in TOKENS)]
 
 
 def render(rep):

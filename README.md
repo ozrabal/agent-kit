@@ -76,6 +76,11 @@ If gates or review still fail after the rounds, the loop pushes a **draft** PR w
   shows what a change did to cost, tokens and rounds.
 - Hooks catch lint and gate failures inside the implement session, so fewer resumed fix rounds
   with a new prompt are needed.
+- Path-scoped rules (`.knowledge/rules/*.md`, frontmatter `paths: ["src/api/**"]` and `summary:`;
+  no `paths` = everywhere; globs use `fnmatch` on repo-relative paths, so `*` also crosses folders) replace pasting everything everywhere: the context pack has the full
+  text of the rules for the files it picked, the review prompt has `conventions.md` plus the rules
+  for the changed files, and other sessions get a one-line-per-rule digest
+  (`.knowledge/rules-digest.md`, written by `kb update`).
 - Implement, fix and review stream their sessions to `.agent/runs/<n>/<step>.log` and print each
   tool call while they run. Same tokens as before; only the output format changes.
 
@@ -101,8 +106,21 @@ Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
   the only record of what a post-edit hook told Claude: that feedback is not in the session log.
   `agent-kit run` prints each call live during implement and fix sessions (review edits nothing),
   `agent-kit log <n> [step]` lists a ticket's calls under `## hooks` (matched by Claude session id),
-  `agent-kit report` counts them per ticket (`hooks`, `edit_blk`, `stop_blk`, `hook_err`) and
+  `agent-kit report` counts them per ticket (`hooks`, `edit_blk`, `stop_blk`, `guard_blk`, `hook_err`) and
   `doctor` warns about hook errors in the last `hooks.error_window_hours` (default `24`).
+- `guard.*`: a PreToolUse scope guard (`agent-kit hook guard`). During a loop run (a run whose
+  worktree is the session's checkout and that is still implementing or fixing) it blocks
+  Edit/Write/MultiEdit/NotebookEdit outside the worktree or on `guard.protected` paths (default
+  `.git/*`, `.agent/*`, `.github/workflows/*`, `.claude/*`), and Bash commands matching a
+  `guard.deny_bash` regex (default: `git push`, `git reset --hard`, `rm -rf /`, `curl ... | sh`,
+  `gh pr merge`, `rm -rf ~`, redirects, `tee`, `cp`, `mv` into `~/`). The block message says what is allowed instead. Outside a
+  run it does nothing unless `guard.always` is `true` (then the repo is the scope). Denials show in
+  `agent-kit log <n>` as `hook guard ...: BLOCK`, in `agent-kit report` as `guard_blk`, and in
+  `doctor` (last `hooks.error_window_hours`).
+- `session-start` (SessionStart): outside a loop run, prints `.knowledge/rules-digest.md` and a hint
+  to use `agent-kit kb context` into Claude's context; in a run it prints nothing (the prompt has
+  the pack). `subagent-start` (SubagentStart, which can add context but not block): gives every
+  sub-agent the run's `context.md`, or the digest outside a run, as `additionalContext`.
 - Hooks do nothing in repos without `.agent/config.json`. Gates in hooks cost no tokens; Claude
   reads the compacted failure output in its session.
 

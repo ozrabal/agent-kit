@@ -73,6 +73,13 @@ class Report(unittest.TestCase):
         self.assertEqual((a["hook_calls"], a["edit_blocks"], a["stop_blocks"], a["hook_errors"]), (6, 1, 2, 1))
         self.assertEqual((b["hook_calls"], b["edit_blocks"], b["stop_blocks"], b["hook_errors"]), (0, 0, 0, 0))
 
+    def test_guard_denials_counted(self):
+        make_run(self.runs, 5, {"status": "pr_open", "ws": "/wt/5"}, [call("implement", 1.0)])
+        hook = [{"event": "guard", "outcome": "block", "cwd": "/wt/5"}, {"event": "guard", "outcome": "pass", "cwd": "/wt/5"}]
+        (self.runs / "hooks.jsonl").write_text("".join(json.dumps(r) + "\n" for r in hook))
+        [a] = report.collect(self.runs)["rows"]
+        self.assertEqual((a["hook_calls"], a["guard_blocks"]), (2, 1))
+
     def test_hook_calls_matched_by_session_when_tickets_share_a_folder(self):
         make_run(self.runs, 7, {"status": "pr_open", "ws": "/repo", "sessions": [{"step": "implement", "id": "a"}]},
                  [call("implement", 1.0)])
@@ -108,10 +115,10 @@ class Report(unittest.TestCase):
                  [call("implement", 1.25, i=1000, o=20), call("fix-gates:1", 0.5), call("fix-gates:2", 0.5)])
         lines = report.render(report.collect(self.runs)).splitlines()
         self.assertEqual(lines[0].split(), ["ticket", "status", "usd", "calls", "fix", "review", "gates", "hooks",
-                                            "edit_blk", "stop_blk", "hook_err", "in", "cache_r", "out"])
-        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "FAIL", "0", "0", "0", "0",
+                                            "edit_blk", "stop_blk", "guard_blk", "hook_err", "in", "cache_r", "out"])
+        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "FAIL", "0", "0", "0", "0", "0",
                                             "1000", "0", "20"])
-        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0", "1000", "0", "20"])
+        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0", "0", "1000", "0", "20"])
 
 
 if __name__ == "__main__":

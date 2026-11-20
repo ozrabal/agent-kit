@@ -37,7 +37,7 @@ def main(argv=None):
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--since", type=int, help="only LLM calls at or after this unix timestamp")
 
-    p = sub.add_parser("hooks", help="install Claude Code hooks: file gates after edits, gates before stopping")
+    p = sub.add_parser("hooks", help="install Claude Code hooks: scope guard, context at session start, file gates after edits, gates before stopping")
     p.add_argument("action", choices=["install", "uninstall"])
     p.add_argument("--user", action="store_true", help="~/.claude/settings.json instead of the repo's")
 
@@ -61,7 +61,9 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd == "hook":
         from . import hooks
-        code, msg = hooks.main(a.event, sys.stdin.read())
+        code, msg, stdout = hooks.main(a.event, sys.stdin.read())
+        if stdout:
+            print(stdout)
         if msg:
             print(msg, file=sys.stderr)
         return code

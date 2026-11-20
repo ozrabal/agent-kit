@@ -30,6 +30,12 @@ Config: `file_gates` (`{name, match, cmd with {file}, timeout}`), `hooks.stop_ga
 `hooks.note_chars`, `hooks.error_window_hours`. Every hook call is logged in
 `.agent/runs/hooks.jsonl`; `agent-kit log <issue>` shows them, `agent-kit report` counts them.
 
+Rules for specific paths live in `.knowledge/rules/*.md` (frontmatter `paths: [globs]`, `summary:`).
+`agent-kit kb context` includes the full rules for the files it picks; at session start you get a
+one-line digest. During a loop run a guard (`guard.protected`, `guard.deny_bash`, `guard.always`)
+blocks edits outside the worktree or on protected paths and risky Bash (push, reset --hard,
+curl | sh, gh pr merge). A block is not an error to work around: do what the message allows.
+
 ## After finishing work outside the loop
 
 - `agent-kit kb update` (incremental; only changed files are re-parsed, LLM summaries only for

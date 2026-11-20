@@ -29,6 +29,17 @@ DEFAULTS = {
     "file_gates": [],  # {"name", "match": glob, "cmd": "... {file}", "timeout"}: run by the post-edit hook
     "hooks": {"stop_gate": True, "stop_max_blocks": 2, "file_gate_timeout": 60, "note_chars": 600,
               "error_window_hours": 24},
+    "guard": {  # PreToolUse scope guard; active during a loop run, or always when "always" is true
+        "always": False,
+        "protected": [".git/*", ".agent/*", ".github/workflows/*", ".claude/*"],
+        "deny_bash": [
+            r"\bgit\s+push\b", r"\bgit\s+reset\s+--hard\b", r"\bgh\s+pr\s+merge\b",
+            r"\brm\s+(-\S+\s+)*(/|~/?|\$HOME/?)(\*|\s|$)",  # rm -rf / or ~
+            r"\bcurl\b[^|;&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b",  # curl ... | sh
+            r">>?\s*(~|\$HOME)/", r"\btee\b[^;&|]*\s(~|\$HOME)/",  # writes to ~/
+            r"\b(cp|mv)\b[^;&|]*\s(~|\$HOME)(/\S*)?\s*($|[;&|])",
+        ],
+    },
     "merge": {"policy": "pause", "max_open_prs": 1, "poll_seconds": 120},
     "loop": {"max_fix_rounds": 2, "max_review_rounds": 2, "timeout_seconds": 3600},
     "models": {"implement": "sonnet", "review": "opus", "summarize": "haiku"},
@@ -73,6 +84,10 @@ def _merge(base, over):
         else:
             base[k] = v
     return base
+
+
+# Run statuses while the loop's Claude session works (set in loop.py); the guard is active only then.
+IMPLEMENTING, FIXING_REVIEW = "implementing", "fixing-review-"
 
 
 def config_path(root):
