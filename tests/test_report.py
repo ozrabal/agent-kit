@@ -114,12 +114,12 @@ class Report(unittest.TestCase):
         make_run(self.runs, 3, {"key": "#3", "status": "needs_human", "gates": {"ok": False}},
                  [call("implement", 1.25, i=1000, o=20), call("fix-gates:1", 0.5), call("fix-gates:2", 0.5)])
         lines = report.render(report.collect(self.runs)).splitlines()
-        self.assertEqual(lines[0].split(), ["ticket", "status", "usd", "calls", "fix", "review", "rv_skip", "rv_light", "rv_full",
-                                        "rv_usd", "rv_in", "rv_cache_r", "gates", "hooks",
+        self.assertEqual(lines[0].split(), ["ticket", "status", "usd", "calls", "fix", "review", "escal", "rv_skip", "rv_light", "rv_full",
+                                        "rv_usd", "rv_in", "rv_cache_r", "gates", "tdd", "hooks",
                                             "edit_blk", "stop_blk", "guard_blk", "hook_err", "in", "cache_r", "out"])
-        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "0", "0", "0", "0.00", "0", "0", "FAIL", "0", "0", "0", "0", "0",
+        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "FAIL", "-", "0", "0", "0", "0", "0",
                                             "1000", "0", "20"])
-        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0", "1000", "0", "20"])
+        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0", "1000", "0", "20"])
 
     def test_review_decisions_and_review_cost(self):
         def rv(tier):

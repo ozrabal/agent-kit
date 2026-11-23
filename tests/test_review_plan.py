@@ -93,7 +93,7 @@ def pr_body(reviews):
     lp = Loop.__new__(Loop)  # _pr_body needs only cfg
     lp.cfg = copy.deepcopy(DEFAULTS)
     issue = {"number": 7, "key": "#7", "title": "t"}
-    return lp._pr_body(issue, {"summary": "s"}, {"gates": None, "reviews": reviews}, None)
+    return lp._pr_body(issue, {"summary": "s"}, {"gates": None, "reviews": reviews, "tdd": None}, None)
 
 
 class PrBody(unittest.TestCase):

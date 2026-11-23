@@ -130,7 +130,9 @@ def main(argv=None):
         ws = state.get("ws")
         hook_rows = hooks.rows_for(hooks.read_rows(cfg), state, step=a.step)
         plans = [rv["plan"] for rv in state.get("reviews") or [] if rv.get("plan")]
-        if not logs and not hook_rows and not plans:
+        from .report import run_lines
+        notes = [] if a.step else run_lines(state)
+        if not logs and not hook_rows and not plans and not notes:
             die(f"no Claude logs in {d}" + (f" for step {a.step}" if a.step else ""))
         for f in logs:
             print(f"## {f.stem}")
@@ -140,6 +142,8 @@ def main(argv=None):
             for i, p in enumerate(plans, 1):
                 model = f" {p['model']}" if p["run"] else ""
                 print(f"{i}. {p['tier'].upper()}{model}: {p['reason']}")
+        if notes:
+            print("\n".join(notes))
         if hook_rows:
             print("## hooks")
             print("\n".join(hooks.render_row(r, cwd=ws) for r in hook_rows))

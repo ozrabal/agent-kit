@@ -5,7 +5,7 @@ import json
 import sys
 import time
 
-from . import hooks, kb
+from . import hooks, kb, tdd
 from .config import DEFAULTS, config_path
 from .util import read_json, sh
 
@@ -142,8 +142,19 @@ def check_guard(ctx):
                                      f"{last.get('note')} (`agent-kit log <issue>` shows the run)")]
 
 
+def check_tdd(ctx):
+    """loop.tdd needs a gate to run the tests on the base; without one the check is always skipped."""
+    t = ctx.cfg["loop"]["tdd"]
+    if not t["enabled"]:
+        return []
+    if tdd.gate(ctx.cfg):
+        return [result("tdd", True)]
+    return [result("tdd", False, f"loop.tdd.gate '{t['gate']}' is not a gate name" if t["gate"] else
+                   "no gate name contains 'test': set loop.tdd.gate to the gate that runs the tests")]
+
+
 CHECKS = [check_tools, check_python, check_gh_auth, check_config, check_labels, check_base_branch,
-          check_gates, check_knowledge_base, check_hooks,
+          check_gates, check_tdd, check_knowledge_base, check_hooks,
           check_hook_errors, check_guard]
 
 
