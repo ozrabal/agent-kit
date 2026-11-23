@@ -1,6 +1,7 @@
 """Issue tracker adapter. Only GitHub for now; the loop talks to this interface:
 issues(), get(n), key(issue), blockers(issue), is_done(issue), candidates(),
-set_status(n, old, new), close(n), find_pr(branch), create_pr(...), pr_state(ref).
+set_status(n, old, new), close(n), find_pr(branch), create_pr(...), pr_state(ref),
+pr_review_comments(pr), pr_checks(pr), failed_log(run_id), reply(pr, comment_id, body), comment(pr, body).
 """
 import json
 import re
@@ -9,14 +10,15 @@ from .util import out, sh
 
 
 class GitHub:
-    def __init__(self, cfg):
+    def __init__(self, cfg, run=sh):
         self.cfg = cfg
+        self.run = run  # tests pass a fake gh runner
         self.t = cfg["tracker"]
         self.root = cfg["_root"]
         self._cache = None
 
     def _gh(self, *args, check=True):
-        return sh(["gh", *args], cwd=self.root, check=check)
+        return self.run(["gh", *args], cwd=self.root, check=check)
 
     # --- issues -----------------------------------------------------------
     def issues(self, refresh=False):
@@ -109,6 +111,62 @@ class GitHub:
 
     def edit_pr_body(self, ref, body_file):
         self._gh("pr", "edit", str(ref), "--body-file", str(body_file))
+
+    # --- PR follow-up: review comments and CI --------------------------------
+    def _pages(self, endpoint):
+        pages = json.loads(self._gh("api", "--paginate", "--slurp", endpoint).stdout or "[]")
+        return [x for page in pages for x in page]
+
+    def pr_review_comments(self, pr):
+        """Inline review comments, review bodies and PR conversation comments, one shape:
+        {id, kind: inline|review|issue, author, path, line, body, created_at, resolved, diff_hunk, in_reply_to}."""
+        n = pr_number(pr)
+        q = ("query($owner:String!,$name:String!,$n:Int!,$endCursor:String){repository(owner:$owner,name:$name)"
+             "{pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){nodes{isResolved "
+             "comments(first:100){nodes{databaseId}}} pageInfo{hasNextPage endCursor}}}}}")
+        pages = json.loads(self._gh("api", "graphql", "--paginate", "--slurp", "-F", "owner={owner}", "-F", "name={repo}",
+                                    "-F", f"n={n}", "-f", f"query={q}").stdout)
+        threads = [t for p in pages for t in p["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]]
+        resolved = {c["databaseId"] for t in threads if t["isResolved"] for c in t["comments"]["nodes"]}
+
+        def one(x, kind, created, path=None, line=None, hunk=None, reply_to=None):
+            return {"id": x["id"], "kind": kind, "author": (x.get("user") or {}).get("login"), "path": path,
+                    "line": line, "body": x.get("body") or "", "created_at": created, "resolved": x["id"] in resolved,
+                    "diff_hunk": hunk, "in_reply_to": reply_to, "association": x.get("author_association")}
+
+        res = [one(x, "inline", x["created_at"], x["path"], x.get("line") or x.get("original_line"),
+                   x.get("diff_hunk"), x.get("in_reply_to_id"))
+               for x in self._pages(f"repos/{{owner}}/{{repo}}/pulls/{n}/comments")]
+        res += [one(x, "review", x.get("submitted_at")) for x in self._pages(f"repos/{{owner}}/{{repo}}/pulls/{n}/reviews")]
+        res += [one(x, "issue", x["created_at"]) for x in self._pages(f"repos/{{owner}}/{{repo}}/issues/{n}/comments")]
+        return res
+
+    def pr_checks(self, pr):
+        """{"sha": head commit, "checks": [{name, bucket, state, link}], "failed_runs": [Actions run ids]}.
+        bucket is pass|fail|pending|skipping|cancel; gh exits 8 (pending) or 1 (failed / no checks)."""
+        n = str(pr_number(pr))
+        sha = json.loads(self._gh("pr", "view", n, "--json", "headRefOid").stdout)["headRefOid"]
+        raw = self._gh("pr", "checks", n, "--json", "name,bucket,state,link", check=False).stdout.strip()
+        checks = json.loads(raw) if raw.startswith("[") else []
+        runs = [int(m.group(1)) for c in checks if c.get("bucket") == "fail"
+                for m in [re.search(r"/actions/runs/(\d+)", c.get("link") or "")] if m]
+        return {"sha": sha, "checks": checks, "failed_runs": list(dict.fromkeys(runs))}
+
+    def failed_log(self, run_id):
+        return self._gh("run", "view", str(run_id), "--log-failed", check=False).stdout
+
+    def reply(self, pr, comment_id, body):
+        """Reply in an inline comment's thread."""
+        self._gh("api", "-X", "POST", f"repos/{{owner}}/{{repo}}/pulls/{pr_number(pr)}/comments/{comment_id}/replies",
+                 "-f", f"body={body}")
+
+    def comment(self, pr, body):
+        self._gh("pr", "comment", str(pr_number(pr)), "--body", body)
+
+
+def pr_number(ref):
+    """42 from 42, "42" or a PR URL ending in /pull/42."""
+    return int(str(ref).rstrip("/").rsplit("/", 1)[-1])
 
 
 def make(cfg):

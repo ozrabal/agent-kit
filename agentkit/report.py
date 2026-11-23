@@ -3,14 +3,16 @@ Used by `agent-kit report` and the sandbox benchmark to compare runs."""
 from pathlib import Path
 
 from . import hooks as hook_log
+from .followup import poll_text
 from .llm import step_kind
 from .util import read_json, read_jsonl
 
 TOKENS = ("in", "cache_r", "out")
 HOOKS = ("hook_calls", "edit_blocks", "stop_blocks", "guard_blocks", "hook_errors")
 REVIEWS = ("review_skipped", "review_light", "review_full", "review_usd", "review_in", "review_cache_r")
-MONEY = ("usd", "review_usd")  # shown with two decimals
-METRICS = ("usd", "calls", "fix_rounds", "review_rounds", "escalated", *REVIEWS, *HOOKS, *TOKENS)  # summed in "total", compared by the benchmark
+FOLLOW = ("polls", "triaged", "triage_usd", "comment_fixes", "ci_fixes", "needs_human")  # after the PR is open
+MONEY = ("usd", "review_usd", "triage_usd")  # shown with two decimals
+METRICS = ("usd", "calls", "fix_rounds", "review_rounds", "escalated", *REVIEWS, *FOLLOW, *HOOKS, *TOKENS)  # summed in "total", compared by the benchmark
 
 
 def _gates(state):
@@ -36,6 +38,15 @@ def review_counts(state, calls):
             "review_in": sum(c.get("in") or 0 for c in rv), "review_cache_r": sum(c.get("cache_r") or 0 for c in rv)}
 
 
+def follow_counts(state, calls):
+    """PR follow-up: polls, triaged comments and their cost, comment and CI fix rounds, needs a human."""
+    steps = [step_kind(c) for c in calls]
+    return {"polls": state.get("poll_count") or len(state.get("polls") or []), "triaged": len(state.get("triage") or []),
+            "triage_usd": round(sum(c.get("usd") or 0 for c in calls if step_kind(c) == "triage"), 4),
+            "comment_fixes": steps.count("fix-comments"), "ci_fixes": steps.count("fix-ci"),
+            "needs_human": 1 if state.get("needs_human") else 0}
+
+
 def collect(runs_dir, since=None):
     """{"rows": [one per ticket run], "total": sums}. since: unix ts; older calls are ignored
     and runs with no newer calls are left out."""
@@ -57,6 +68,7 @@ def collect(runs_dir, since=None):
             "escalated": len(state.get("escalations") or []),
         }
         row.update(review_counts(state, calls))
+        row.update(follow_counts(state, calls))
         row.update(hook_counts(hook_rows, state))
         row.update({t: sum(c.get(t) or 0 for c in calls) for t in TOKENS})
         rows.append(row)
@@ -67,7 +79,8 @@ def collect(runs_dir, since=None):
 COLUMNS = [("ticket", "key"), ("status", "status"), ("usd", "usd"), ("calls", "calls"), ("fix", "fix_rounds"),
            ("review", "review_rounds"), ("escal", "escalated"), ("rv_skip", "review_skipped"), ("rv_light", "review_light"),
            ("rv_full", "review_full"), ("rv_usd", "review_usd"), ("rv_in", "review_in"),
-           ("rv_cache_r", "review_cache_r"), ("gates", "gates"), ("tdd", "tdd"),
+           ("rv_cache_r", "review_cache_r"), ("polls", "polls"), ("triaged", "triaged"), ("tr_usd", "triage_usd"),
+           ("cm_fix", "comment_fixes"), ("ci_fix", "ci_fixes"), ("human", "needs_human"), ("gates", "gates"), ("tdd", "tdd"),
            ("hooks", "hook_calls"), ("edit_blk", "edit_blocks"), ("stop_blk", "stop_blocks"), ("guard_blk", "guard_blocks"), ("hook_err", "hook_errors"), *((t, t) for t in TOKENS)]
 
 
@@ -82,7 +95,17 @@ def run_lines(state):
     if state.get("escalations"):
         lines.append("## escalations")
         lines += [f"{e['step']} -> {e['model']}: {e['reason']}" for e in state["escalations"]]
-    return lines
+    follow = [f"poll: {poll_text(p)}" for p in state.get("polls") or []]
+    follow += [f"triage #{t['id']}: {t['action']} ({t['reason']})" for t in state.get("triage") or []]
+    for f in state.get("follow_ups") or []:
+        what = f"comments {', '.join(map(str, f['ids']))}" if f.get("ids") else f"sha {str(f.get('sha'))[:7]}"
+        line = f"{f['step']} ({what}{', fresh session' if f.get('fresh_session') else ''}): {f['result']}"
+        follow.append(line + (f" {f['commit']}" if f.get("commit") else ""))
+    if state.get("needs_human"):
+        follow.append(f"needs a human: {state['needs_human']['reason']}")
+    follow += [f"override: {o['was']} cleared by `agent-kit address` (ci rounds {o['ci_rounds'] or 0}, "
+               f"comment rounds {o['comment_rounds'] or 0})" for o in state.get("overrides") or []]
+    return lines + (["## follow-up", *follow] if follow else [])
 
 
 def render(rep):

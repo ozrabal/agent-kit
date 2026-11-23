@@ -52,7 +52,11 @@ curl | sh, gh pr merge). A block is not an error to work around: do what the mes
 - With `loop.tdd.enabled`, the tests you add must fail on the base branch: they are run there with the
   old code, and tests that pass without your change (or no tests) come back as a review finding.
 - `agent-kit run [--ticket N] [--wait] [--max N] [--dry-run]`: one ticket at a time, dependency
-  aware; pauses for the human to merge each PR. `--wait` polls for the merge without LLM cost.
+  aware; pauses for the human to merge each PR. `--wait` polls open PRs: no LLM cost unless there are
+  new review comments (lean triage, then a fix if asked) or failed CI on a new head SHA.
+- `agent-kit address <issue>`: handle new review comments and failed CI on that ticket's open PR now.
+  Reply drafts land in `.agent/runs/<issue>/replies.md` (posted only with `pr.post_replies`). When the
+  limits are reached the run becomes `needs_human` (label + PR comment); `address` again overrides it.
 - Run state and cost logs: `.agent/runs/<issue>/` (`state.json`, `cost.jsonl`, `pr.md`, `context.md`,
   and one `<step>.log` per Claude session). `agent-kit log <issue>` prints what Claude did, readably.
 - A failed run leaves a draft PR with a "Needs a human" section; rerunning `--ticket N` resumes it.

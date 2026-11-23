@@ -12,7 +12,7 @@ READ_ONLY_BASH = [
 DEFAULTS = {
     "tracker": {
         "type": "github",
-        "labels": {"ready": "ready-for-agent", "wip": "in-progress", "done": "done"},
+        "labels": {"ready": "ready-for-agent", "wip": "in-progress", "done": "done", "needs_human": "needs-human"},
         "blocked_by_heading": "blocked by",
         "key_pattern": r"^([A-Za-z][A-Za-z0-9]*-\d+[a-z]?)\b",
         "closed_counts_as_done": True,
@@ -43,15 +43,16 @@ DEFAULTS = {
     "merge": {"policy": "pause", "max_open_prs": 1, "poll_seconds": 120},
     "loop": {
         "max_fix_rounds": 2, "max_review_rounds": 2, "timeout_seconds": 3600,
+        "max_ci_rounds": 2, "max_comment_rounds": 2,  # per PR, after it is open (agent-kit address / run --wait)
         # red/green: the branch's new tests must fail on the base; gate null = first gate named *test*
         "tdd": {"enabled": False, "gate": None,
                 "test_paths": ["tests/**", "**/*_test.*", "**/test_*.*", "**/*.test.*", "**/*.spec.*"]},
     },
     # escalate: model for the last gate-fix and the last review-fix round (null = models.implement)
     "models": {"implement": "sonnet", "review": "opus", "review_light": "sonnet", "summarize": "haiku",
-               "escalate": None},
+               "triage": "haiku", "escalate": None},
     "effort": {"implement": None, "review": None, "summarize": "low"},
-    "budget_usd": {"implement": 8, "fix": 3, "review": 3, "summarize": 0.5},
+    "budget_usd": {"implement": 8, "fix": 3, "review": 3, "summarize": 0.5, "triage": 0.3},
     "implement": {
         "permission_mode": "acceptEdits",
         "tools": "Bash,Read,Edit,Write,Glob,Grep",
@@ -67,7 +68,10 @@ DEFAULTS = {
         "risky_paths": [],  # any changed file matches: models.review
         "light_max_lines": 300,  # above this: models.review, else models.review_light
     },
-    "pr": {"sections": ["Summary", "Evidence"], "include_review": True, "draft_on_fail": True},
+    "pr": {"sections": ["Summary", "Evidence"], "include_review": True, "draft_on_fail": True,
+           "post_replies": False,
+           # only comments by these GitHub author associations are triaged (anyone else's could steer the agent)
+           "trusted_associations": ["OWNER", "MEMBER", "COLLABORATOR"]},  # post triage reply drafts on the PR (else only .agent/runs/<n>/replies.md)
     "kb": {
         "dir": ".knowledge",
         "include_ext": [
