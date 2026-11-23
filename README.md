@@ -34,7 +34,8 @@ agent-kit report [--json]      # cost, tokens, fix and review rounds per ticket 
 agent-kit log 12               # what Claude did on ticket #12: tool calls, errors, denials, hook calls
 agent-kit run --dry-run        # show the prompt for the next ticket, change nothing
 agent-kit run                  # do the next unblocked ticket, open a PR, pause for merge
-agent-kit run --wait           # keep going: poll for merges (no LLM), then the next ticket
+agent-kit run --wait           # keep going: poll open PRs (comments, CI, merges), then the next ticket
+agent-kit address 12           # handle new review comments and failed CI on #12's open PR now
 ```
 
 Commit `.agent/config.json`, `.knowledge/` and `.claude/settings.json` (the loop's worktrees only
@@ -62,6 +63,29 @@ are local.
 
 If gates or review still fail after the rounds, the loop pushes a **draft** PR with a
 "Needs a human" section and stops. `agent-kit run --ticket N` resumes it.
+
+## After the PR is open
+
+`agent-kit run --wait` polls every open PR once per `merge.poll_seconds`; `agent-kit address <n>`
+does one pass now (also when `merge.max_open_prs` is reached).
+
+| Step | Done by |
+|---|---|
+| read review comments (inline, review bodies, conversation) and checks on the head SHA | script (`gh`) |
+| keep comments that are new: by a trusted author (`pr.trusted_associations`), not handled, thread not resolved, not a `[bot]`, not the kit's own (`<!-- agent-kit -->` marker) | script |
+| triage new comments: `fix`, `reply` or `ignore` per comment, from its text and diff hunk | LLM (lean, `models.triage`) |
+| reply drafts to `.agent/runs/<n>/replies.md`; posted only with `pr.post_replies` | script |
+| fix comments, up to `loop.max_comment_rounds` per PR (last one escalated) | LLM, session resumed (fresh session if the resume fails) |
+| failed CI on a new head SHA, once nothing is pending: compacted `--log-failed` output into a fix, up to `loop.max_ci_rounds` | LLM, session resumed |
+| gates and gate-fix rounds, commit (`address review` / `fix CI`), push | script (+ LLM for gate fixes) |
+| limits reached, gates still failing (the edits stay uncommitted in the worktree) or a fix that changed nothing: label `needs-human`, PR comment, status `needs_human`; polls skip it | script |
+
+Handled comment ids (`handled_comments`) and CI SHAs (`handled_ci`) live in `state.json`, so a restart
+never handles one twice. `agent-kit address <n>` on a `needs_human` run is your override: it resets
+the round limits and lets the last CI failure be retried. A fix interrupted mid-way (status
+`fixing-review-comments` / `fixing-review-ci`) is picked up by the next poll. Every poll decision, triage result and fix is in `state.json`
+(`polls`, `triage`, `follow_ups`, `needs_human`), the run log, `agent-kit log <n>` (`## follow-up`),
+`agent-kit status` and `agent-kit report` (`polls`, `triaged`, `tr_usd`, `cm_fix`, `ci_fix`, `human`).
 
 ## Token use
 
@@ -95,6 +119,10 @@ If gates or review still fail after the rounds, the loop pushes a **draft** PR w
   (`prompts/review-system.md`, the same for every ticket), so repeated reviews can read it from the
   prompt cache; the user message holds only conventions/rules, ticket, diff stat and diff. The
   implement prompt starts with how to work and what to return; ticket and context pack come last.
+- PR follow-up: a poll with nothing new makes no LLM call. New comments cost one lean triage call
+  (`models.triage`, default haiku, `budget_usd.triage`): fixed instructions in its system prompt
+  (`prompts/triage-system.md`), each comment with only its diff hunk, no tools. Only `fix` comments and
+  failed CI resume the implementer session (`budget_usd.fix`); CI logs are compacted like gate output.
 - Implement, fix and review stream their sessions to `.agent/runs/<n>/<step>.log` and print each
   tool call while they run. Same tokens as before; only the output format changes.
 
@@ -160,6 +188,14 @@ Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
   The session is resumed with `--model`, so it keeps its context; the new model has no cache for it,
   so that round pays the cache write once. Logged (`escalate: ...`), in `state.json` (`escalations`),
   `agent-kit log <n>` (`## escalations`), `agent-kit report` (`escal`) and per call in `cost.jsonl` (`model`).
+- `loop.max_comment_rounds` / `loop.max_ci_rounds` (default 2 each, per PR): fix rounds after the PR is
+  open, for review comments and for failed CI. `models.triage` (default `haiku`) and
+  `budget_usd.triage` (default 0.3) for the comment triage. `pr.post_replies` (default `false`):
+  post triage reply drafts on the PR; otherwise they are only in `.agent/runs/<n>/replies.md`.
+  `pr.trusted_associations` (default `["OWNER", "MEMBER", "COLLABORATOR"]`): only comments by these
+  GitHub author associations are triaged, so a stranger's comment on a public repo cannot steer the agent.
+  `tracker.labels.needs_human` (default `needs-human`): set when the follow-up gives up (doctor
+  checks that the label exists).
 - Hooks do nothing in repos without `.agent/config.json`. Gates in hooks cost no tokens; Claude
   reads the compacted failure output in its session.
 

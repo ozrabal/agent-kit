@@ -41,7 +41,7 @@ def config(root, user=None):
     return cfg
 
 
-LABELS = json.dumps([{"name": n} for n in ("ready-for-agent", "in-progress", "done")])
+LABELS = json.dumps([{"name": n} for n in ("ready-for-agent", "in-progress", "done", "needs-human")])
 HEALTHY = {"gh label list": (0, LABELS), "git ls-remote": (0, "abc\trefs/heads/main\n")}
 
 

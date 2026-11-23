@@ -22,6 +22,9 @@ def main(argv=None):
     p.add_argument("--max", type=int, help="stop after N tickets")
     p.add_argument("--dry-run", action="store_true", help="print the implement prompt for the next ticket; change nothing")
 
+    p = sub.add_parser("address", help="handle new PR review comments and failed CI for a ticket's open PR now")
+    p.add_argument("ticket", type=int)
+
     sub.add_parser("status", help="ready/blocked tickets and runs with cost")
     sub.add_parser("next", help="print the next unblocked ticket as JSON")
     sub.add_parser("reconcile", help="mark merged PRs done and clean up worktrees")
@@ -161,6 +164,9 @@ def main(argv=None):
         print(json.dumps({k: i[k] for k in ("number", "key", "title", "blocked_by")} if i else None))
     elif a.cmd == "reconcile":
         lp.reconcile()
+    elif a.cmd == "address":
+        lp.reconcile()
+        return lp.address_now(a.ticket)
     elif a.cmd == "run":
         return lp.run(ticket=a.ticket, wait=a.wait, max_tickets=a.max, dry=a.dry_run)
     return 0

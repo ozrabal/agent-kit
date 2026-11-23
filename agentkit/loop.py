@@ -15,10 +15,10 @@ import time
 from pathlib import Path
 from string import Template
 
-from . import gates, hooks, kb, llm, tdd
+from . import followup, gates, hooks, kb, llm, tdd
 from .config import FIXING_REVIEW, IMPLEMENTING, READ_ONLY_BASH, fmt, runs_dir
 from .tracker import make
-from .util import KIT_DIR, clip, log, out, read_json, sh, slug, write_json
+from .util import KIT_DIR, clip, compact, log, out, read_json, sh, slug, write_json
 
 IMPL_SCHEMA = {
     "type": "object",
@@ -54,6 +54,15 @@ REVIEW_SCHEMA = {
             "required": ["kind", "text"]}},
     },
     "required": ["criteria", "findings", "lessons"],
+}
+TRIAGE_SCHEMA = {
+    "type": "object",
+    "properties": {"comments": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"id": {"type": "integer"}, "action": {"type": "string", "enum": ["fix", "reply", "ignore"]},
+                       "reason": {"type": "string"}, "reply_draft": {"type": "string"}},
+        "required": ["id", "action", "reason", "reply_draft"]}}},
+    "required": ["comments"],
 }
 
 
@@ -108,6 +117,8 @@ def has_criteria(body):
 
 
 TIERS = ("skip", "light", "full")
+FOLLOWING = ("pr_open", "fixing-review-comments", "fixing-review-ci")  # polled; a fix status = interrupted fix
+POLLS_KEPT = 50  # state.json keeps the last polls only; --wait polls every merge.poll_seconds
 
 
 def review_plan(cfg, changed, diff_lines, body="", reviewed=None):
@@ -147,11 +158,11 @@ def fix_model(cfg, rnd, last):
 
 
 class Loop:
-    def __init__(self, cfg, claude=llm.claude):
+    def __init__(self, cfg, claude=llm.claude, tracker=None):
         self.cfg = cfg
-        self.claude = claude  # tests pass a fake
+        self.claude = claude  # tests pass a fake (and a fake tracker)
         self.root = Path(cfg["_root"])
-        self.tr = make(cfg)
+        self.tr = tracker or make(cfg)
         self.base = cfg["branch"]["base"]
         self.remote = cfg["branch"]["remote"]
         self.upstream = f"{self.remote}/{self.base}"
@@ -193,8 +204,9 @@ class Loop:
             if r["status"] not in ("done",):
                 usd = sum((llm.cost_summary(r.cost_log) or {}).get(k, {}).get("usd", 0)
                           for k in (llm.cost_summary(r.cost_log) or {}))
+                note = followup.status_note(r.s, self.cfg["loop"])
                 lines.append(f"RUN    #{r['number']} {r['key']} status={r['status']} "
-                             f"pr={r['pr'] or '-'} cost=${usd:.2f}")
+                             f"pr={r['pr'] or '-'} cost=${usd:.2f}" + (f" | {note}" if note else ""))
         return lines
 
     def pick(self, number=None):
@@ -375,21 +387,27 @@ class Loop:
             block.append(f)
             run.set(reviews=(run["reviews"] or [])[:-1] + [rv])
 
+    def _gate_rounds(self, run, ws, key):
+        """Gates, then up to loop.max_fix_rounds resumed fix rounds while they fail. Returns the last report."""
+        c = self.cfg
+        rep = self._gates(ws)
+        fix_round = 0
+        while not rep["ok"] and fix_round < c["loop"]["max_fix_rounds"]:
+            fix_round += 1
+            run.set(fix_rounds=(run["fix_rounds"] or 0) + 1)
+            details = gates.render({"results": [r for r in rep["results"] if not r["ok"]]})
+            self._fix(run, ws, prompt("fix", key=key, reason="These gates fail:", details=details),
+                      f"fix-gates:{fix_round}", fix_round, c["loop"]["max_fix_rounds"], "gate-fix")
+            rep = self._gates(ws)
+        run.set(gates=rep)
+        return rep
+
     def _quality_rounds(self, run, ws, issue):
         c, key = self.cfg, issue["key"]
         review_round = 0
         run.set(fix_rounds=run["fix_rounds"] or 0)
         while True:
-            rep = self._gates(ws)
-            fix_round = 0
-            while not rep["ok"] and fix_round < c["loop"]["max_fix_rounds"]:
-                fix_round += 1
-                run.set(fix_rounds=run["fix_rounds"] + 1)
-                details = gates.render({"results": [r for r in rep["results"] if not r["ok"]]})
-                self._fix(run, ws, prompt("fix", key=key, reason="These gates fail:", details=details),
-                          f"fix-gates:{fix_round}", fix_round, c["loop"]["max_fix_rounds"], "gate-fix")
-                rep = self._gates(ws)
-            run.set(gates=rep)
+            rep = self._gate_rounds(run, ws, key)
             if not rep["ok"]:
                 return {"reason": "gates still failing after fix rounds", "details": gates.render(rep)}
             self._commit(ws, f"{key}: {issue['title'].split(':', 1)[-1].strip()}" if review_round == 0
@@ -475,6 +493,173 @@ class Loop:
             parts += ["## Needs a human", "", failure["reason"], "", failure.get("details", ""), ""]
         return "\n".join(parts).rstrip() + "\n"
 
+    # --- after the PR is open: review comments and CI ---------------------
+    def address(self, run):
+        """One follow-up pass over a run's open PR: new review comments, then failed CI on the head SHA.
+        Every decision is a row in state.json "polls". No LLM call when nothing is new."""
+        c = self.cfg
+        new = followup.new_comments(self.tr.pr_review_comments(run["pr"]), run["handled_comments"],
+                                    c["pr"]["trusted_associations"])
+        ci = self.tr.pr_checks(run["pr"])
+        dec = followup.ci_decision(ci["checks"], ci["sha"], run["handled_ci"], run["ci_rounds"] or 0,
+                                  c["loop"]["max_ci_rounds"])
+        note = "nothing new" if not new and dec["action"] in ("none", "handled") else ""
+        self._poll(run, comments=len(new), ci=dec["action"], sha=ci["sha"], note=note or dec["reason"])
+        pushed = self._triage(run, new) if new else False
+        if run["status"] == "needs_human":
+            return
+        if pushed:  # CI runs again on the new head: next poll
+            return
+        if dec["action"] == "limit":
+            self._needs_human(run, dec["reason"], followup.check_lines(dec["failed"]))
+        elif dec["action"] == "fix":  # after a push CI runs again on the new head: next poll
+            self._fix_ci(run, ci, dec)
+
+    def follow_up(self):
+        """One address() pass per run whose PR is open; needs_human runs wait for you. An error on one PR
+        is recorded and logged, and the others are still polled."""
+        for r in all_runs(self.cfg):
+            if r["status"] in FOLLOWING:
+                self._address_safely(r)
+
+    def _address_safely(self, r):
+        """address(), with an error recorded as a poll row; one inside a fix makes the run needs_human."""
+        try:
+            self.address(r)
+            return True
+        except (RuntimeError, llm.LLMError) as e:
+            err = str(e)[:500]
+            self._poll(r, error=err)
+            if str(r["status"]).startswith(FIXING_REVIEW):  # stopped inside a fix: don't leave the guard on
+                try:
+                    self._needs_human(r, f"follow-up failed: {err[:300]}")
+                except RuntimeError:
+                    r.set(status="needs_human", needs_human={"ts": int(time.time()), "reason": err[:300]})
+            return False
+
+    def address_now(self, number):
+        """`agent-kit address <n>`: one pass now. On a needs_human run it is your override: label back to
+        in-progress, round limits reset, status pr_open. Returns an exit code."""
+        r = Run(self.cfg, number)
+        if r["status"] not in (*FOLLOWING, "needs_human") or not r["pr"]:
+            log(f"#{number}: no open PR to address (status {r['status'] or 'unknown'})")
+            return 1
+        if r["status"] == "needs_human":
+            self.tr.set_status(number, "needs_human", "wip")
+            over = {"ts": int(time.time()), "was": "needs_human", "ci_rounds": r["ci_rounds"],
+                    "comment_rounds": r["comment_rounds"]}
+            r.set(status="pr_open", ci_rounds=0, comment_rounds=0, overrides=(r["overrides"] or []) + [over],
+                  handled_ci=(r["handled_ci"] or [])[:-1])  # the last failure may be retried
+            log(f"{r['key']}: needs_human overridden by you: round limits reset for this pass")
+        return 0 if self._address_safely(r) else 2
+
+    def _needs_human(self, run, reason, details=""):
+        """Stop following this PR: label the issue, say why on the PR, status needs_human (polls skip it)."""
+        self.tr.set_status(run["number"], None, "needs_human")
+        self.tr.comment(run["pr"], f"## Needs a human\n\n{reason}\n\n{details}".rstrip() + f"\n\n{followup.MARKER}")
+        run.set(status="needs_human", needs_human={"ts": int(time.time()), "reason": reason})
+        log(f"{run['key']}: needs a human: {reason}")
+
+    def _fix_ci(self, run, ci, dec):
+        """Failed checks on the head SHA -> one fix round with their compacted logs. The SHA is handled
+        before the fix, so a restart never fixes the same failure twice."""
+        rnd = (run["ci_rounds"] or 0) + 1
+        run.set(ci_rounds=rnd, handled_ci=(run["handled_ci"] or []) + [ci["sha"]])
+        logs = [f"### run {rid}\n```\n{compact(self.tr.failed_log(rid))}\n```" for rid in ci["failed_runs"]]
+        details = "\n\n".join(logs) or followup.check_lines(dec["failed"])
+        self._follow_fix(run, "ci", f"CI fails on {ci['sha'][:7]} ({', '.join(x['name'] for x in dec['failed'])}):",
+                         details, rnd, self.cfg["loop"]["max_ci_rounds"], "fix CI", sha=ci["sha"])
+
+    def _triage(self, run, new):
+        """One lean, cheap call decides fix|reply|ignore per comment; reply drafts go to replies.md
+        (and to the PR only when pr.post_replies). A comment the call leaves out counts as ignore."""
+        c = self.cfg
+        text = prompt("triage", key=run["key"], title=run["title"], comments="\n\n".join(map(followup.render, new)))
+        res, _ = self.claude(text, cwd=run["ws"], step="triage", model=c["models"]["triage"], schema=TRIAGE_SCHEMA,
+                             lean=True, system=prompt("triage-system"), tools="", budget=c["budget_usd"]["triage"],
+                             timeout=c["loop"]["timeout_seconds"], cost_log=run.cost_log)
+        ts = int(time.time())
+        got = {d["id"]: d for d in res["comments"]}
+        rows = [{**got.get(x["id"], {"id": x["id"], "action": "ignore", "reason": "no decision from triage",
+                                     "reply_draft": ""}), "ts": ts} for x in new]
+        for r in rows:
+            log(f"{run['key']}: triage #{r['id']}: {r['action']} ({r['reason']})")
+        run.set(triage=(run["triage"] or []) + rows)
+        by_id = {x["id"]: x for x in new}
+        replies = [(by_id[r["id"]], r["reply_draft"]) for r in rows if r["reply_draft"].strip()]
+        if replies:
+            with (run.dir / "replies.md").open("a") as f:
+                f.write("".join(followup.reply_md(x, d) for x, d in replies))
+            if c["pr"]["post_replies"]:
+                for x, d in replies:
+                    self._post_reply(run, x, d)
+        done = [r["id"] for r in rows if r["action"] != "fix"]
+        run.set(handled_comments=(run["handled_comments"] or []) + done)
+        fixes = [by_id[r["id"]] for r in rows if r["action"] == "fix"]
+        if fixes and (run["comment_rounds"] or 0) >= c["loop"]["max_comment_rounds"]:
+            self._needs_human(run, f"comment fix rounds used: {run['comment_rounds']} of {c['loop']['max_comment_rounds']}",
+                              "Comments left to address:\n\n" + "\n\n".join(map(followup.render, fixes)))
+        elif fixes:
+            rnd = (run["comment_rounds"] or 0) + 1
+            run.set(comment_rounds=rnd)
+            res = self._follow_fix(run, "comments", "Review comments on its PR ask for these changes:",
+                                   "\n\n".join(map(followup.render, fixes)), rnd, c["loop"]["max_comment_rounds"],
+                                   "address review", ids=[x["id"] for x in fixes])
+            if res == "pushed":
+                run.set(handled_comments=run["handled_comments"] + [x["id"] for x in fixes])
+            return res == "pushed"
+        return False
+
+    def _follow_fix(self, run, kind, reason, details, rnd, last, msg, **what):
+        """A fix after the PR is open: resumed session (a fresh one if the resume fails), gates with their fix
+        rounds, commit, push. The guard is on while it runs (status fixing-review-<kind>). Returns the result."""
+        key, ws, step = run["key"], Path(run["ws"]), f"fix-{kind}:{rnd}"
+        row = {"ts": int(time.time()), "kind": kind, "round": rnd, "step": step, "fresh_session": False, **what}
+        run.set(status=f"{FIXING_REVIEW}{kind}")
+        log(f"{key}: {kind} fix round {rnd} of {last}")
+        try:
+            self._fix(run, ws, prompt("fix", key=key, reason=reason, details=details), step, rnd, last, f"{kind}-fix")
+        except llm.LLMError as e:
+            if not run["session"]:
+                raise
+            log(f"{key}: resuming session {run['session']} failed ({str(e)[:200]}); starting a fresh one")
+            row["fresh_session"] = True
+            issue = self.tr.get(run["number"])
+            intro = (f"Ticket {key}: {issue['title']}\n\n{issue.get('body') or ''}\n\nThe branch already holds the "
+                     f"work for it (see `git diff {self.upstream}...HEAD`); its PR is open.")
+            run.set(session=None)
+            self._fix(run, ws, prompt("fix", key=key, reason=f"{intro}\n\n{reason}", details=details),
+                      step, rnd, last, f"{kind}-fix")
+        rep = self._gate_rounds(run, ws, key)
+        head = out(["git", "rev-parse", "HEAD"], cwd=ws)
+        if rep["ok"]:
+            self._commit(ws, f"{key}: {msg}")
+        if not rep["ok"]:
+            row["result"] = "gates failing"
+        elif out(["git", "rev-parse", "HEAD"], cwd=ws) == head:
+            row["result"] = "no changes"
+        else:
+            sh(["git", "push", self.remote, run["branch"]], cwd=ws)
+            row["result"], row["commit"] = "pushed", out(["git", "rev-parse", "--short", "HEAD"], cwd=ws)
+        run.set(status="pr_open", follow_ups=(run["follow_ups"] or []) + [row])
+        log(f"{key}: {step}: {row['result']}" + (f" {row['commit']}" if row.get("commit") else ""))
+        if row["result"] == "gates failing":
+            self._needs_human(run, f"gates still failing after {step} and its gate fix rounds", gates.render(rep))
+        elif row["result"] == "no changes":
+            self._needs_human(run, f"{step} changed nothing", details)
+        return row["result"]
+
+    def _post_reply(self, run, x, draft):
+        if x["kind"] == "inline":
+            self.tr.reply(run["pr"], x.get("in_reply_to") or x["id"], f"{draft}\n\n{followup.MARKER}")
+        else:
+            self.tr.comment(run["pr"], f"{followup.quote(x['body'])}\n\n{draft}\n\n{followup.MARKER}")
+
+    def _poll(self, run, **row):
+        row = {"ts": int(time.time()), **row}
+        run.set(polls=((run["polls"] or []) + [row])[-POLLS_KEPT:], poll_count=(run["poll_count"] or 0) + 1)
+        log(f"{run['key']}: poll: {followup.poll_text(row)}")
+
     # --- the loop ----------------------------------------------------------
     def run(self, ticket=None, wait=False, max_tickets=None, dry=False):
         done = 0
@@ -487,7 +672,9 @@ class Loop:
                 if not wait:
                     log(f"paused: waiting for you to merge {names}. Run again after merging (or use --wait).")
                     return 0
-                log(f"waiting for merge: {names} (polling every {self.cfg['merge']['poll_seconds']}s, no LLM)")
+                log(f"waiting for merge: {names} (polling every {self.cfg['merge']['poll_seconds']}s, "
+                    "LLM only for new comments or failed CI)")
+                self.follow_up()
                 time.sleep(self.cfg["merge"]["poll_seconds"])
                 continue
             if max_tickets is not None and done >= max_tickets:

@@ -57,6 +57,40 @@ class Report(unittest.TestCase):
         self.assertEqual(rep["rows"][0]["key"], "#2")
         self.assertEqual(rep["rows"][0]["gates"], "-")
 
+    def test_follow_up_counts(self):
+        state = {"status": "needs_human", "poll_count": 61, "polls": [{"ts": 1}],
+                 "triage": [{"id": 1, "action": "fix"}, {"id": 2, "action": "reply"}, {"id": 3, "action": "ignore"}],
+                 "needs_human": {"ts": 5, "reason": "CI rounds used: 2 of 2"}}
+        make_run(self.runs, 7, state, [call("triage", 0.01), call("triage", 0.02), call("fix-comments:1", 0.5),
+                                       call("fix-ci:1", 0.4), call("fix-ci:2", 0.4), call("fix-gates:1", 0.1)])
+        [row] = report.collect(self.runs)["rows"]
+        self.assertEqual({k: row[k] for k in ("polls", "triaged", "triage_usd", "comment_fixes", "ci_fixes",
+                                              "needs_human", "fix_rounds")},
+                         {"polls": 61, "triaged": 3, "triage_usd": 0.03, "comment_fixes": 1, "ci_fixes": 2,
+                          "needs_human": 1, "fix_rounds": 1})
+        for k in ("polls", "triaged", "triage_usd", "comment_fixes", "ci_fixes", "needs_human"):
+            self.assertIn(k, report.METRICS)
+        self.assertIn("triage_usd", report.MONEY)
+        self.assertIn("ci_fix", report.render(report.collect(self.runs)))
+
+    def test_follow_up_log_lines(self):
+        state = {"polls": [{"ts": 0, "comments": 0, "ci": "pending", "sha": "abc1234", "note": "CI pending on abc1234"},
+                           {"ts": 0, "error": "HTTP 502"}],
+                 "triage": [{"id": 11, "action": "fix", "reason": "asks to rename", "reply_draft": "", "ts": 0}],
+                 "follow_ups": [{"ts": 0, "kind": "comments", "round": 1, "step": "fix-comments:1",
+                                 "fresh_session": True, "ids": [11], "result": "pushed", "commit": "abc9999"}],
+                 "needs_human": {"ts": 0, "reason": "CI rounds used: 2 of 2"},
+                 "overrides": [{"ts": 0, "was": "needs_human", "ci_rounds": 2, "comment_rounds": 0}]}
+        self.assertEqual(report.run_lines(state), [
+            "## follow-up",
+            "poll: 0 new comment(s), CI pending on abc1234",
+            "poll: error: HTTP 502",
+            "triage #11: fix (asks to rename)",
+            "fix-comments:1 (comments 11, fresh session): pushed abc9999",
+            "needs a human: CI rounds used: 2 of 2",
+            "override: needs_human cleared by `agent-kit address` (ci rounds 2, comment rounds 0)",
+        ])
+
     def test_hook_calls_counted_per_worktree(self):
         make_run(self.runs, 7, {"status": "pr_open", "ws": "/wt/7-add"}, [call("implement", 1.0)])
         make_run(self.runs, 8, {"status": "pr_open", "ws": "/wt/8-other"}, [call("implement", 1.0)])
@@ -115,11 +149,11 @@ class Report(unittest.TestCase):
                  [call("implement", 1.25, i=1000, o=20), call("fix-gates:1", 0.5), call("fix-gates:2", 0.5)])
         lines = report.render(report.collect(self.runs)).splitlines()
         self.assertEqual(lines[0].split(), ["ticket", "status", "usd", "calls", "fix", "review", "escal", "rv_skip", "rv_light", "rv_full",
-                                        "rv_usd", "rv_in", "rv_cache_r", "gates", "tdd", "hooks",
+                                        "rv_usd", "rv_in", "rv_cache_r", "polls", "triaged", "tr_usd", "cm_fix", "ci_fix", "human", "gates", "tdd", "hooks",
                                             "edit_blk", "stop_blk", "guard_blk", "hook_err", "in", "cache_r", "out"])
-        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "FAIL", "-", "0", "0", "0", "0", "0",
+        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0.00", "0", "0", "0", "FAIL", "-", "0", "0", "0", "0", "0",
                                             "1000", "0", "20"])
-        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0", "1000", "0", "20"])
+        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0", "0", "1000", "0", "20"])
 
     def test_review_decisions_and_review_cost(self):
         def rv(tier):
