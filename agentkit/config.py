@@ -55,9 +55,12 @@ DEFAULTS = {
     },
     # escalate: model for the last gate-fix and the last review-fix round (null = models.implement)
     "models": {"implement": "sonnet", "review": "opus", "review_light": "sonnet", "summarize": "haiku",
-               "triage": "haiku", "escalate": None, "refine": "sonnet"},
-    "effort": {"implement": None, "review": None, "summarize": "low"},
-    "budget_usd": {"implement": 8, "fix": 3, "review": 3, "summarize": 0.5, "triage": 0.3, "refine": 0.5},
+               "triage": "haiku", "escalate": None, "refine": "sonnet", "retro": "sonnet"},
+    "effort": {"implement": None, "review": None, "summarize": "low", "retro": None},
+    "budget_usd": {"implement": 8, "fix": 3, "review": 3, "summarize": 0.5, "triage": 0.3, "refine": 0.5, "retro": 0.5},
+    # agent-kit retro: a group is "repeated" in >= min_runs runs; error_lines per failing gate; top items
+    # per report section; max_chars of the report and known_chars of the known rules/gotchas sent to the one LLM call
+    "retro": {"min_runs": 2, "error_lines": 3, "top": 10, "max_chars": 12000, "known_chars": 3000},
     # the script check: items under criteria_heading; max_chars 0 = no limit; above max_criteria = too big
     "refine": {"criteria_heading": "acceptance criteria", "max_chars": 8000, "max_criteria": 8},
     "implement": {
@@ -116,14 +119,30 @@ def config_path(root):
     return Path(root) / ".agent" / "config.json"
 
 
+RETRO_LOG, RETRO_COST_LOG = "retro.jsonl", "retro-cost.jsonl"  # in runs_dir: one row per retro; its LLM calls
+
+
 def runs_dir(cfg):
-    """Local run state: .agent/runs/<issue>/ plus kb-cost.jsonl."""
+    """Local run state: .agent/runs/<issue>/ plus hooks.jsonl, kb-cost.jsonl, retro.jsonl and retro-cost.jsonl."""
     return Path(cfg["_root"]) / ".agent" / "runs"
 
 
 def hook_state_path(cfg):
     """Stop-hook block counters per Claude session (local, gitignored)."""
     return Path(cfg["_root"]) / ".agent" / "hook-state.json"
+
+
+def unknown_keys(user, defaults, prefix=""):
+    """Dotted paths of keys in user that DEFAULTS does not know. An empty dict in DEFAULTS
+    (like workspace.env) is a free-form map, so its keys are not checked."""
+    found = []
+    for k, v in user.items():
+        path = prefix + k
+        if k not in defaults:
+            found.append(path)
+        elif isinstance(v, dict) and isinstance(defaults[k], dict) and defaults[k]:
+            found += unknown_keys(v, defaults[k], path + ".")
+    return found
 
 
 def load(cwd=None):

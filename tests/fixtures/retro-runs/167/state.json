@@ -1,0 +1,101 @@
+{
+ "number": 167,
+ "key": "#167",
+ "title": "Add a `remove` command",
+ "refine": {
+  "ts": 1795610874,
+  "mode": "check",
+  "ok": true,
+  "reasons": [],
+  "criteria": 2,
+  "body_hash": "587845006b7e",
+  "proposed": false
+ },
+ "refine_checks": 1,
+ "branch": "167-add-a-remove-command",
+ "ws": "/home/dev/.agent-wt/agent-kit-sandbox/167-add-a-remove-command",
+ "status": "pr_open",
+ "parallel": {
+  "ts": 1795610874,
+  "batch": [
+   167,
+   170
+  ],
+  "slots": 2,
+  "left": [
+   {
+    "number": 168,
+    "why": "waits on #167"
+   },
+   {
+    "number": 169,
+    "why": "waits on #168"
+   },
+   {
+    "number": 171,
+    "why": "no free slot (2 of 2 used)"
+   }
+  ],
+  "pid": 35496,
+  "exit": 0,
+  "secs": 26.5
+ },
+ "locks": [
+  {
+   "ts": 1795610877,
+   "event": "taken",
+   "pid": 35496
+  },
+  {
+   "ts": 1795610902,
+   "event": "released",
+   "pid": 35496
+  }
+ ],
+ "session": "696433c3-9205-48ec-9356-d28a882c9d46",
+ "sessions": [
+  {
+   "step": "implement",
+   "id": "696433c3-9205-48ec-9356-d28a882c9d46"
+  }
+ ],
+ "fix_rounds": 0,
+ "gates": {
+  "ok": true,
+  "results": [
+   {
+    "name": "test",
+    "ok": true,
+    "secs": 0.0
+   }
+  ]
+ },
+ "reviews": [
+  {
+   "criteria": [
+    {
+     "criterion": "`python3 -m todo.cli remove 1` deletes task 1 and prints `removed 1: <title>`",
+     "met": true,
+     "evidence": "todo/cli.py remove branch calls store.remove and prints f\"removed {id}: {title}\"; Store.remove deletes and saves."
+    },
+    {
+     "criterion": "Unit tests cover removing an existing and a missing id",
+     "met": true,
+     "evidence": "tests/test_store.py test_remove and test_remove_missing."
+    }
+   ],
+   "findings": [],
+   "lessons": [],
+   "pass": true,
+   "plan": {
+    "run": true,
+    "model": "sonnet",
+    "reason": "25 changed lines, ordinary paths",
+    "tier": "light"
+   }
+  }
+ ],
+ "tdd": null,
+ "tdd_checks": [],
+ "failure": null
+}

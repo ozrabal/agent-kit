@@ -65,6 +65,10 @@ curl | sh, gh pr merge). A block is not an error to work around: do what the mes
 - `agent-kit address <issue>`: handle new review comments and failed CI on that ticket's open PR now.
   Reply drafts land in `.agent/runs/<issue>/replies.md` (posted only with `pr.post_replies`). When the
   limits are reached the run becomes `needs_human` (label + PR comment); `address` again overrides it.
+- `agent-kit retro [--since <ts>] [--no-llm]`: gate errors, review findings and denied tool calls that
+  repeat across runs, and the most expensive steps. Without `--no-llm`, one lean call proposes rules
+  (`.knowledge/rules/retro-*.md`), gotchas and config changes; they land in the working tree, uncommitted,
+  for a human to review. `doctor` warns when something repeats since the last retro.
 - Run state and cost logs: `.agent/runs/<issue>/` (`state.json`, `cost.jsonl`, `pr.md`, `context.md`,
   and one `<step>.log` per Claude session). `agent-kit log <issue>` prints what Claude did, readably.
 - A failed run leaves a draft PR with a "Needs a human" section; rerunning `--ticket N` resumes it.

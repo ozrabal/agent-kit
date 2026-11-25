@@ -228,5 +228,28 @@ class RefineParallel(unittest.TestCase):
             "stale pid 9", "taken pid 10"])
 
 
+
+class RetroLine(unittest.TestCase):
+    def test_no_retro_yet(self):
+        with tempfile.TemporaryDirectory() as t:
+            self.assertEqual(report.retro_line(Path(t)), "")
+
+    def test_one_retro(self):
+        with tempfile.TemporaryDirectory() as t:
+            (Path(t) / "retro.jsonl").write_text(json.dumps({"ts": 1795640000, "mode": "no-llm", "usd": 0}) + "\n")
+            self.assertEqual(report.retro_line(Path(t)), "retro: 1 run, LLM $0.00, 0 rules and 0 gotchas proposed; "
+                                                         "last 2026-11-25 20:53 UTC (no-llm: 0 rules, 0 gotchas, 0 config)")
+
+    def test_count_last_run_and_cost(self):
+        with tempfile.TemporaryDirectory() as t:
+            rows = [{"ts": 1795600000, "mode": "llm", "usd": 0.012, "rules": ["a"], "gotchas": 2, "config": 1},
+                    {"ts": 1795610000, "mode": "nothing", "usd": 0, "rules": [], "gotchas": 0, "config": 0},
+                    {"ts": 1795640000, "mode": "llm", "usd": 0.02, "rules": ["b", "c"], "gotchas": 0, "config": 0}]
+            (Path(t) / "retro.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+            self.assertEqual(report.retro_line(Path(t)),
+                             "retro: 3 runs, LLM $0.03, 3 rules and 2 gotchas proposed; "
+                             "last 2026-11-25 20:53 UTC (llm: 2 rules, 0 gotchas, 0 config)")
+
+
 if __name__ == "__main__":
     unittest.main()

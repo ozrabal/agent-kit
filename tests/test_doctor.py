@@ -173,6 +173,34 @@ class Doctor(unittest.TestCase):
         self.assertTrue(res["warn"])
         self.assertIn("blocked Bash", res["hint"])
 
+    def failing_run(self, n, ts):
+        d = self.root / ".agent" / "runs" / str(n)
+        d.mkdir(parents=True)
+        (d / "state.json").write_text(json.dumps({"number": n, "gate_failures": [{"round": 0, "results": [
+            {"name": "test", "ok": False, "secs": 1, "output": "E   assert 2 == 1"}]}]}))
+        (d / "cost.jsonl").write_text(json.dumps({"ts": ts, "step": "implement", "usd": 0.05}) + "\n")
+
+    def retro_row(self, ts, mode):
+        with (self.root / ".agent" / "runs" / "retro.jsonl").open("a") as f:
+            f.write(json.dumps({"ts": ts, "mode": mode}) + "\n")
+
+    def test_retro_ok_without_repeats(self):
+        self.failing_run(1, 100)
+        res = self.results(config(self.root, {}), FakeRun(HEALTHY))["retro"]
+        self.assertEqual((res["ok"], res["warn"]), (True, False))
+
+    def test_repeats_since_the_last_retro_warn(self):
+        self.failing_run(1, 100)
+        self.failing_run(2, 300)
+        self.retro_row(200, "llm")
+        self.retro_row(250, "no-llm")  # --no-llm, refused and failed retros learn nothing: they do not count
+        self.assertFalse(self.results(config(self.root, {}), FakeRun(HEALTHY))["retro"]["warn"])
+        self.failing_run(3, 400)
+        res = self.results(config(self.root, {}), FakeRun(HEALTHY))["retro"]
+        self.assertTrue(res["warn"])
+        self.assertEqual(res["hint"], "in 2 runs since the last retro: 1 repeated gate errors, 0 review findings, "
+                                      "0 denied tools: run `agent-kit retro`")
+
     def test_recent_hook_errors_warn(self):
         import time
         log = self.root / ".agent" / "runs" / "hooks.jsonl"

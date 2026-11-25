@@ -44,6 +44,10 @@ def main(argv=None):
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--since", type=int, help="only LLM calls at or after this unix timestamp")
 
+    p = sub.add_parser("retro", help="find repeated gate errors, review findings and denials across runs; propose rules and gotchas")
+    p.add_argument("--since", type=int, help="only runs with LLM calls at or after this unix timestamp")
+    p.add_argument("--no-llm", action="store_true", help="print the aggregate only; no LLM call, nothing written")
+
     p = sub.add_parser("hooks", help="install Claude Code hooks: scope guard, context at session start, file gates after edits, gates before stopping")
     p.add_argument("action", choices=["install", "uninstall"])
     p.add_argument("--user", action="store_true", help="~/.claude/settings.json instead of the repo's")
@@ -123,8 +127,15 @@ def main(argv=None):
     if a.cmd == "report":
         from . import report
         rep = report.collect(config.runs_dir(cfg), since=a.since)
-        print(json.dumps(rep, indent=2) if a.json else report.render(rep))
+        footer = report.retro_line(config.runs_dir(cfg))
+        print(json.dumps(rep, indent=2) if a.json else report.render(rep) + (f"\n\n{footer}" if footer else ""))
         return 0
+
+    if a.cmd == "retro":
+        from . import retro
+        code, text = retro.run(cfg, here, since=a.since, use_llm=not a.no_llm)
+        print(text)
+        return code
 
     if a.cmd == "log":
         from . import hooks
