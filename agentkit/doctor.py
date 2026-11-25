@@ -153,8 +153,25 @@ def check_tdd(ctx):
                    "no gate name contains 'test': set loop.tdd.gate to the gate that runs the tests")]
 
 
+def check_loop_modes(ctx):
+    """loop.refine is a known mode; loop.parallel runs need their own worktrees and PR slots."""
+    lp, res = ctx.cfg["loop"], []
+    mode = lp["refine"]
+    res.append(result("refine", mode in ("off", "check", "auto"), f"loop.refine must be off, check or auto (got {mode!r})"))
+    par, most = lp["parallel"], ctx.cfg["merge"]["max_open_prs"]
+    if not isinstance(par, int) or isinstance(par, bool) or par < 1:
+        res.append(result("parallel", False, f"loop.parallel must be a whole number >= 1 (got {par!r})"))
+    elif par > 1 and ctx.cfg["workspace"]["mode"] != "worktree":
+        res.append(result("parallel", False, "loop.parallel > 1 needs workspace.mode \"worktree\" (one checkout per ticket)"))
+    elif par > most:
+        res.append(warning("parallel", f"loop.parallel {par} > merge.max_open_prs {most}: at most {most} run at once"))
+    else:
+        res.append(result("parallel", True))
+    return res
+
+
 CHECKS = [check_tools, check_python, check_gh_auth, check_config, check_labels, check_base_branch,
-          check_gates, check_tdd, check_knowledge_base, check_hooks,
+          check_gates, check_tdd, check_loop_modes, check_knowledge_base, check_hooks,
           check_hook_errors, check_guard]
 
 

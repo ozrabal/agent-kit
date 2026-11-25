@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -41,7 +42,7 @@ def config(root, user=None):
     return cfg
 
 
-LABELS = json.dumps([{"name": n} for n in ("ready-for-agent", "in-progress", "done", "needs-human")])
+LABELS = json.dumps([{"name": n} for n in ("ready-for-agent", "in-progress", "done", "needs-human", "needs-refinement")])
 HEALTHY = {"gh label list": (0, LABELS), "git ls-remote": (0, "abc\trefs/heads/main\n")}
 
 
@@ -210,6 +211,40 @@ class Doctor(unittest.TestCase):
                                             "FAIL gh auth -> run `gh auth login`")
         self.assertFalse(doctor.all_ok(rs))
         self.assertTrue(doctor.all_ok(rs[:2]))
+
+
+
+class LoopModes(unittest.TestCase):
+    """doctor: loop.refine is a known mode; loop.parallel fits merge.max_open_prs and the workspace mode."""
+
+    def check(self, **loop):
+        cfg = copy.deepcopy(DEFAULTS)
+        cfg["loop"].update(loop.pop("loop", {}))
+        for k, v in loop.items():
+            cfg[k].update(v)
+        return {r["name"]: r for r in doctor.check_loop_modes(SimpleNamespace(cfg=cfg))}
+
+    def test_defaults_ok(self):
+        res = self.check()
+        self.assertTrue(res["refine"]["ok"] and not res["refine"]["warn"])
+        self.assertTrue(res["parallel"]["ok"] and not res["parallel"]["warn"])
+
+    def test_unknown_refine_mode_fails(self):
+        self.assertEqual(self.check(loop={"refine": "on"})["refine"],
+                         {"name": "refine", "ok": False, "warn": False, "hint": "loop.refine must be off, check or auto (got 'on')"})
+
+    def test_parallel_above_max_open_prs_warns(self):
+        r = self.check(loop={"parallel": 3}, merge={"max_open_prs": 2})["parallel"]
+        self.assertTrue(r["warn"])
+        self.assertIn("at most 2 run at once", r["hint"])
+
+    def test_parallel_in_branch_mode_fails(self):
+        r = self.check(loop={"parallel": 2}, merge={"max_open_prs": 2}, workspace={"mode": "branch"})["parallel"]
+        self.assertFalse(r["ok"])
+        self.assertIn("workspace.mode", r["hint"])
+
+    def test_parallel_not_a_positive_int_fails(self):
+        self.assertFalse(self.check(loop={"parallel": 0})["parallel"]["ok"])
 
 
 if __name__ == "__main__":

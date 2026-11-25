@@ -13,7 +13,7 @@ AC = "Do it.\n\n## Acceptance criteria\n- works\n"
 
 
 def cfg(**review):
-    return {"models": {**DEFAULTS["models"], "review": "opus", "review_light": "sonnet"},
+    return {"models": {**DEFAULTS["models"], "review": "opus", "review_light": "sonnet"}, "refine": DEFAULTS["refine"],
             "review": {**DEFAULTS["review"], **review}}
 
 

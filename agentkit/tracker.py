@@ -1,6 +1,7 @@
 """Issue tracker adapter. Only GitHub for now; the loop talks to this interface:
 issues(), get(n), key(issue), blockers(issue), is_done(issue), candidates(),
-set_status(n, old, new), close(n), find_pr(branch), create_pr(...), pr_state(ref),
+set_status(n, old, new), remove_label(n, status), close(n, reason), create_issue(title, body, labels), issue_comments(n),
+issue_comment(n, body), edit_body(n, body), find_pr(branch), create_pr(...), pr_state(ref),
 pr_review_comments(pr), pr_checks(pr), failed_log(run_id), reply(pr, comment_id, body), comment(pr, body).
 """
 import json
@@ -17,8 +18,8 @@ class GitHub:
         self.root = cfg["_root"]
         self._cache = None
 
-    def _gh(self, *args, check=True):
-        return self.run(["gh", *args], cwd=self.root, check=check)
+    def _gh(self, *args, check=True, input=None):
+        return self.run(["gh", *args], cwd=self.root, check=check, input=input)
 
     # --- issues -----------------------------------------------------------
     def issues(self, refresh=False):
@@ -87,9 +88,41 @@ class GitHub:
         i = self.get(n)
         i["labels"] = [l for l in i["labels"] if not old or l != labels[old]] + [labels[new]]
 
-    def close(self, n):
+    def remove_label(self, n, status):
+        lab = self.t["labels"][status]
+        if lab in self.get(n)["labels"]:
+            self._gh("issue", "edit", str(n), "--remove-label", lab)
+            self.get(n)["labels"].remove(lab)
+
+    def close(self, n, reason="completed"):
         if self.get(n)["state"] == "OPEN":
-            self._gh("issue", "close", str(n), "--reason", "completed", check=False)
+            self._gh("issue", "close", str(n), "--reason", reason, check=False)
+            self.get(n)["state"] = "CLOSED"
+
+    # --- issue writes (refine) ----------------------------------------------
+    def create_issue(self, title, body, labels=()):
+        """Create an issue (body on stdin); returns its number from the URL gh prints last."""
+        args = ["issue", "create", "--title", title, "--body-file", "-"]
+        for l in labels:
+            args += ["--label", l]
+        url = self._gh(*args, input=body).stdout.strip().splitlines()[-1]
+        n = int(url.rstrip("/").rsplit("/", 1)[-1])
+        if self._cache is not None:  # else the next issues() call loads it
+            self._cache[n] = {"number": n, "title": title, "body": body, "labels": list(labels), "state": "OPEN"}
+        return n
+
+    def issue_comments(self, n):
+        """[{author, association, body, created_at}] in posting order."""
+        raw = json.loads(self._gh("issue", "view", str(n), "--json", "comments").stdout)
+        return [{"author": (c.get("author") or {}).get("login"), "association": c.get("authorAssociation"),
+                 "body": c.get("body") or "", "created_at": c.get("createdAt")} for c in raw.get("comments") or []]
+
+    def issue_comment(self, n, body):
+        self._gh("issue", "comment", str(n), "--body-file", "-", input=body)
+
+    def edit_body(self, n, body):
+        self._gh("issue", "edit", str(n), "--body-file", "-", input=body)
+        self.get(n)["body"] = body
 
     # --- pull requests ----------------------------------------------------
     def find_pr(self, branch):

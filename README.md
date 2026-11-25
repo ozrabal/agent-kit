@@ -32,6 +32,8 @@ agent-kit status               # ready / blocked tickets
 agent-kit hooks install [--user] # Claude Code hooks: file gates after each edit, gates before stopping
 agent-kit report [--json]      # cost, tokens, fix and review rounds per ticket run
 agent-kit log 12               # what Claude did on ticket #12: tool calls, errors, denials, hook calls
+agent-kit refine 12            # ready? (criteria, size) if not: LLM proposal as a comment, label needs-refinement
+agent-kit refine --apply 12    # apply the posted proposal: criteria into the body, or create the split issues
 agent-kit run --dry-run        # show the prompt for the next ticket, change nothing
 agent-kit run                  # do the next unblocked ticket, open a PR, pause for merge
 agent-kit run --wait           # keep going: poll open PRs (comments, CI, merges), then the next ticket
@@ -48,6 +50,8 @@ are local.
 |---|---|
 | reconcile merged PRs: label `done`, close issue, remove worktree | script |
 | pick the lowest ready issue whose "Blocked by" issues are all done | script |
+| refine check: "Acceptance criteria" items, size; a ticket that fails is skipped (`loop.refine`) | script |
+| refine proposal for a skipped ticket (`loop.refine: "auto"`): comment + label `needs-refinement` | LLM (lean, once per body) |
 | label `in-progress`, worktree from `origin/<base>`, setup commands | script |
 | context pack from `.knowledge/` (FTS5 search + import graph + past tickets + gotchas) | script |
 | implement | LLM (full Claude Code, scoped tools and Bash allowlist) |
@@ -63,6 +67,43 @@ are local.
 
 If gates or review still fail after the rounds, the loop pushes a **draft** PR with a
 "Needs a human" section and stops. `agent-kit run --ticket N` resumes it.
+
+## Refine and parallel tickets
+
+Before implement, `loop.refine` (default `"check"`) runs a script check: the body has a
+`refine.criteria_heading` section (default "acceptance criteria", any heading level, case-insensitive)
+with at least one bullet, numbered or checkbox item, the body is at most `refine.max_chars` (default
+`8000`, `0` = no limit) and there are at most `refine.max_criteria` (default `8`) criteria. A ticket that
+fails is skipped (`check`: log and state only, nothing written to GitHub); with `"auto"`, or by hand with
+`agent-kit refine <n>`, one lean LLM call (`models.refine`, default `sonnet`, `budget_usd.refine` 0.5, no
+tools, the ticket and its `kb context` pack) proposes `criteria`, a `split` (title, body, criteria,
+`blocked_by` = 1-based numbers of earlier parts) and `questions`. The proposal is posted as an issue comment
+(readable, plus a JSON block that carries a hash of the body) and the label goes `ready` ->
+`tracker.labels.refine` (default `needs-refinement`). Only one proposal per body version: a rerun finds it
+in `state.json` or in the kit's comment (trusted authors only). `agent-kit refine --apply <n>` reads that
+block (a human may edit it): a split creates the issues in order (label `needs-refinement`, "Blocked by"
+from the plan plus the parent's own blockers) and closes the parent as not planned; otherwise the criteria
+are written into the body. A human sets `ready` again. An explicit `run --ticket N` is refined too, unless
+its run already exists (resume). `--dry-run` and `next` only check.
+
+`loop.parallel` (default `1`): when > 1, `run` picks up to `min(loop.parallel, merge.max_open_prs - open
+PRs)` ready, unblocked tickets (an unblocked ticket never depends on another one) and runs each as
+`agent-kit run --ticket N` in its own process and worktree; the console shows their lines prefixed
+`[agent-kit #N]`, the parent waits for all of them (Ctrl-C stops them; `run --ticket N` resumes one), then
+goes on (`--wait`: polls, the next batch when PR slots free up). The parent first refreshes the kb index
+and creates the worktrees (the children would race on both); `git fetch`, `worktree add` and pushes take
+turns through `.agent/runs/git.lock`. A ticket run, and every `address` pass on its PR (also from `--wait`),
+holds `.agent/runs/<n>/lock` (pid and a heartbeat time, rewritten every 60 s); a second run on the ticket is
+skipped (a follow-up poll records `skipped: locked by pid X`). A lock whose process is gone, or with no
+heartbeat for 10 minutes (the pid now belongs to another program), is stale and replaced. A ticket whose
+worktree cannot be prepared is left out of the batch (logged, `error` in its `parallel` state); the others
+still run. Needs `workspace.mode: "worktree"`.
+
+Shown in the run log (`refine: ...`, `parallel: #a, #b in 2 slot(s); left out: ...`, lock lines),
+`state.json` (`refine`, `refine_checks`, `refine_apply`, `parallel`, `locks`), `agent-kit status`
+(`REFINE` lines, `locked by pid`, `batch #a, #b`), `agent-kit log <n>` (`## refine`, `## parallel`, `## locks`),
+`agent-kit report` (`rf_chk`, `rf_fail`, `rf_prop`, `rf_usd`, `rf_appl`, `rf_split`, `par` = ran beside
+other tickets, `lk_stale`, `lk_busy`) and `doctor` (`refine` mode, `parallel` vs `merge.max_open_prs` and the workspace mode, the label).
 
 ## After the PR is open
 
@@ -123,6 +164,10 @@ the round limits and lets the last CI failure be retried. A fix interrupted mid-
   (`models.triage`, default haiku, `budget_usd.triage`): fixed instructions in its system prompt
   (`prompts/triage-system.md`), each comment with only its diff hunk, no tools. Only `fix` comments and
   failed CI resume the implementer session (`budget_usd.fix`); CI logs are compacted like gate output.
+- Refine: a ticket that passes the script check costs nothing. One that fails costs one lean call
+  (no tools, fixed instructions in the system prompt `prompts/refine-system.md`, ticket + context pack in
+  the user message) only with `loop.refine: "auto"` or `agent-kit refine <n>`, and only once per body version.
+- `loop.parallel` adds no LLM calls; it runs the same calls for several tickets at the same time.
 - Implement, fix and review stream their sessions to `.agent/runs/<n>/<step>.log` and print each
   tool call while they run. Same tokens as before; only the output format changes.
 
@@ -130,7 +175,7 @@ the round limits and lets the last CI failure be retried. A fix interrupted mid-
 
 Kit defaults live in `agentkit/config.py`; the project file overrides any key. Most useful:
 `gates`, `autofix`, `workspace.setup`, `workspace.env`, `tracker.labels`, `merge.max_open_prs`,
-`models`, `budget_usd`, `loop.*`, `pr.sections`, `implement.allow_bash`, `kb.exclude`, `file_gates`,
+`models`, `budget_usd`, `loop.*` (incl. `loop.refine`, `loop.parallel`), `refine.*`, `pr.sections`, `implement.allow_bash`, `kb.exclude`, `file_gates`,
 `hooks.*`.
 
 Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):

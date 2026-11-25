@@ -11,8 +11,11 @@ TOKENS = ("in", "cache_r", "out")
 HOOKS = ("hook_calls", "edit_blocks", "stop_blocks", "guard_blocks", "hook_errors")
 REVIEWS = ("review_skipped", "review_light", "review_full", "review_usd", "review_in", "review_cache_r")
 FOLLOW = ("polls", "triaged", "triage_usd", "comment_fixes", "ci_fixes", "needs_human")  # after the PR is open
-MONEY = ("usd", "review_usd", "triage_usd")  # shown with two decimals
-METRICS = ("usd", "calls", "fix_rounds", "review_rounds", "escalated", *REVIEWS, *FOLLOW, *HOOKS, *TOKENS)  # summed in "total", compared by the benchmark
+REFINE = ("refine_checks", "refine_failed", "refine_proposed", "refine_usd", "refine_applied", "split_created")
+PARALLEL = ("parallel", "lock_stale", "lock_busy")  # ran in a batch; stale locks removed; skipped as locked
+MONEY = ("usd", "review_usd", "triage_usd", "refine_usd")  # shown with two decimals
+METRICS = ("usd", "calls", "fix_rounds", "review_rounds", "escalated", *REVIEWS, *FOLLOW, *REFINE, *PARALLEL,
+           *HOOKS, *TOKENS)  # summed in "total", compared by the benchmark
 
 
 def _gates(state):
@@ -47,6 +50,22 @@ def follow_counts(state, calls):
             "needs_human": 1 if state.get("needs_human") else 0}
 
 
+def refine_counts(state, calls):
+    """The refine step: checks made, the last one failing, a proposal posted, its cost, applied, split issues made."""
+    rf, ap = state.get("refine") or {}, state.get("refine_apply") or {}
+    return {"refine_checks": state.get("refine_checks") or 0, "refine_failed": 1 if rf and not rf.get("ok") else 0,
+            "refine_proposed": 1 if rf.get("proposed") else 0,
+            "refine_usd": round(sum(c.get("usd") or 0 for c in calls if step_kind(c) == "refine"), 4),
+            "refine_applied": 1 if ap.get("done") else 0, "split_created": len(ap.get("created") or [])}
+
+
+def parallel_counts(state):
+    events = [x.get("event") for x in state.get("locks") or []]
+    batch = (state.get("parallel") or {}).get("batch") or []
+    return {"parallel": 1 if len(batch) > 1 else 0, "lock_stale": events.count("stale"),
+            "lock_busy": events.count("busy")}
+
+
 def collect(runs_dir, since=None):
     """{"rows": [one per ticket run], "total": sums}. since: unix ts; older calls are ignored
     and runs with no newer calls are left out."""
@@ -69,6 +88,8 @@ def collect(runs_dir, since=None):
         }
         row.update(review_counts(state, calls))
         row.update(follow_counts(state, calls))
+        row.update(refine_counts(state, calls))
+        row.update(parallel_counts(state))
         row.update(hook_counts(hook_rows, state))
         row.update({t: sum(c.get(t) or 0 for c in calls) for t in TOKENS})
         rows.append(row)
@@ -80,7 +101,9 @@ COLUMNS = [("ticket", "key"), ("status", "status"), ("usd", "usd"), ("calls", "c
            ("review", "review_rounds"), ("escal", "escalated"), ("rv_skip", "review_skipped"), ("rv_light", "review_light"),
            ("rv_full", "review_full"), ("rv_usd", "review_usd"), ("rv_in", "review_in"),
            ("rv_cache_r", "review_cache_r"), ("polls", "polls"), ("triaged", "triaged"), ("tr_usd", "triage_usd"),
-           ("cm_fix", "comment_fixes"), ("ci_fix", "ci_fixes"), ("human", "needs_human"), ("gates", "gates"), ("tdd", "tdd"),
+           ("cm_fix", "comment_fixes"), ("ci_fix", "ci_fixes"), ("human", "needs_human"), ("rf_chk", "refine_checks"), ("rf_fail", "refine_failed"),
+           ("rf_prop", "refine_proposed"), ("rf_usd", "refine_usd"), ("rf_appl", "refine_applied"), ("rf_split", "split_created"),
+           ("par", "parallel"), ("lk_stale", "lock_stale"), ("lk_busy", "lock_busy"), ("gates", "gates"), ("tdd", "tdd"),
            ("hooks", "hook_calls"), ("edit_blk", "edit_blocks"), ("stop_blk", "stop_blocks"), ("guard_blk", "guard_blocks"), ("hook_err", "hook_errors"), *((t, t) for t in TOKENS)]
 
 
@@ -105,7 +128,49 @@ def run_lines(state):
         follow.append(f"needs a human: {state['needs_human']['reason']}")
     follow += [f"override: {o['was']} cleared by `agent-kit address` (ci rounds {o['ci_rounds'] or 0}, "
                f"comment rounds {o['comment_rounds'] or 0})" for o in state.get("overrides") or []]
-    return lines + (["## follow-up", *follow] if follow else [])
+    return lines + (["## follow-up", *follow] if follow else []) + refine_lines(state) + parallel_lines(state)
+
+
+def refine_note(state):
+    """One line on a run's refine result for `agent-kit status`; "" when there is nothing to say."""
+    rf, ap = state.get("refine") or {}, state.get("refine_apply") or {}
+    if ap.get("done"):
+        return "applied: " + (f"split -> {', '.join('#%d' % x for x in ap['created'])}" if ap.get("created")
+                              else "criteria written into the body")
+    if rf.get("proposed"):
+        return f"proposal posted ({rf.get('source')})"
+    if rf and not rf.get("ok"):
+        return "not ready: " + "; ".join(rf.get("reasons") or [])
+    return ""
+
+
+def refine_lines(state):
+    rf, ap = state.get("refine"), state.get("refine_apply") or {}
+    if not rf and not ap:
+        return []
+    lines = ["## refine"]
+    if rf:
+        verdict = "READY" if rf.get("ok") else f"NOT READY ({'; '.join(rf.get('reasons') or [])})"
+        lines.append(f"{rf.get('mode')}: {verdict}, {state.get('refine_checks') or 1} check(s)")
+        if rf.get("proposed"):
+            lines.append(f"proposal posted ({rf.get('source')}): {rf.get('criteria_proposed', 0)} criteria, "
+                         f"{rf.get('split', 0)} split, {rf.get('questions', 0)} question(s)")
+    if ap:
+        lines.append(refine_note({"refine_apply": {**ap, "done": True}}) + ("" if ap.get("done") else " (unfinished)"))
+    return lines
+
+
+def parallel_lines(state):
+    p, lines = state.get("parallel"), []
+    if p:
+        left = "; ".join(f"#{x['number']} {x['why']}" for x in p.get("left") or [])
+        lines += ["## parallel", f"batch {', '.join('#%d' % x for x in p['batch'])} in {p.get('slots')} slot(s)"
+                  + (f"; left out: {left}" if left else "")]
+        if p.get("pid"):
+            lines.append(f"child pid {p['pid']}: exit {p.get('exit')} after {p.get('secs')}s")
+    if state.get("locks"):
+        lines += ["## locks", *[f"{x['event']} pid {x.get('pid')}" for x in state["locks"]]]
+    return lines
 
 
 def render(rep):

@@ -32,10 +32,12 @@ class FakeGh:
     """Answers gh commands from a table keyed by a substring of the joined command."""
 
     def __init__(self, answers):
-        self.answers, self.calls = answers, []
+        self.answers, self.calls, self.inputs = answers, [], []
 
     def __call__(self, cmd, cwd=None, check=True, **kw):
         self.calls.append(cmd)
+        if kw.get("input") is not None:  # issue bodies go on stdin
+            self.inputs.append(kw["input"])
         line = " ".join(cmd)
         for key, (code, stdout) in self.answers.items():
             if key in line:
@@ -105,6 +107,61 @@ class PrNumber(unittest.TestCase):
     def test_from_url_or_number(self):
         self.assertEqual(pr_number("https://github.com/o/r/pull/42"), 42)
         self.assertEqual(pr_number(7), 7)
+
+
+
+class Issues(unittest.TestCase):
+    """Issue writes used by refine: bodies go on stdin (`-F -`), so no temp files and no argv length limit."""
+
+    def test_create_issue_returns_number_from_url(self):
+        t, fake = gh({"issue create": (0, "Creating issue\nhttps://github.com/o/r/issues/301\n")})
+        t._cache = {}  # issues already listed
+        self.assertEqual(t.create_issue("Better help", "body text", ["needs-refinement"]), 301)
+        self.assertEqual(fake.calls[0], ["gh", "issue", "create", "--title", "Better help", "--body-file", "-",
+                                         "--label", "needs-refinement"])
+        self.assertEqual(fake.inputs[0], "body text")
+        self.assertEqual(t.get(301)["labels"], ["needs-refinement"])  # cached, no extra gh call
+
+    def test_issue_comments(self):
+        raw = {"comments": [{"author": {"login": "ozrabal"}, "authorAssociation": "OWNER", "body": "hi",
+                             "createdAt": "2026-11-24T10:00:00Z"}, {"author": None, "body": "ghost"}]}
+        t, fake = gh({"issue view 158 --json comments": (0, json.dumps(raw))})
+        self.assertEqual(t.issue_comments(158), [
+            {"author": "ozrabal", "association": "OWNER", "body": "hi", "created_at": "2026-11-24T10:00:00Z"},
+            {"author": None, "association": None, "body": "ghost", "created_at": None}])
+
+    def test_comment_on_issue_and_edit_body(self):
+        t, fake = gh({"issue comment": (0, ""), "issue edit": (0, "")})
+        t._cache = {158: {"number": 158, "body": "old", "labels": [], "state": "OPEN", "title": "t"}}
+        t.issue_comment(158, "proposal")
+        t.edit_body(158, "new body")
+        self.assertEqual(fake.calls, [["gh", "issue", "comment", "158", "--body-file", "-"],
+                                      ["gh", "issue", "edit", "158", "--body-file", "-"]])
+        self.assertEqual(fake.inputs, ["proposal", "new body"])
+        self.assertEqual(t.get(158)["body"], "new body")
+
+    def test_close_with_reason(self):
+        t, fake = gh({"issue close": (0, "")})
+        t._cache = {158: {"number": 158, "body": "", "labels": [], "state": "OPEN", "title": "t"}}
+        t.close(158, reason="not planned")
+        self.assertEqual(fake.calls, [["gh", "issue", "close", "158", "--reason", "not planned"]])
+        self.assertEqual(t.get(158)["state"], "CLOSED")
+
+    def test_set_status_from_refine_label(self):
+        t, fake = gh({"issue edit": (0, "")})
+        t._cache = {158: {"number": 158, "body": "", "labels": ["ready-for-agent"], "state": "OPEN", "title": "t"}}
+        t.set_status(158, "ready", "refine")
+        self.assertEqual(fake.calls, [["gh", "issue", "edit", "158", "--add-label", "needs-refinement",
+                                       "--remove-label", "ready-for-agent"]])
+
+
+class RemoveLabel(unittest.TestCase):
+    def test_only_when_present(self):
+        t, fake = gh({"issue edit": (0, "")})
+        t._cache = {158: {"number": 158, "body": "", "labels": ["needs-refinement"], "state": "OPEN", "title": "t"}}
+        t.remove_label(158, "refine")
+        t.remove_label(158, "refine")
+        self.assertEqual(fake.calls, [["gh", "issue", "edit", "158", "--remove-label", "needs-refinement"]])
 
 
 if __name__ == "__main__":
