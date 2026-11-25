@@ -1,7 +1,8 @@
 {
   "tracker": {
     "type": "github",
-    "labels": {"ready": "ready-for-agent", "wip": "in-progress", "done": "done", "needs_human": "needs-human"},
+    "labels": {"ready": "ready-for-agent", "wip": "in-progress", "done": "done", "needs_human": "needs-human",
+               "refine": "needs-refinement"},
     "blocked_by_heading": "blocked by"
   },
   "branch": {"base": "main", "remote": "origin", "name": "{key}-{slug}"},

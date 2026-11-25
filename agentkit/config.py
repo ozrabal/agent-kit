@@ -12,7 +12,8 @@ READ_ONLY_BASH = [
 DEFAULTS = {
     "tracker": {
         "type": "github",
-        "labels": {"ready": "ready-for-agent", "wip": "in-progress", "done": "done", "needs_human": "needs-human"},
+        "labels": {"ready": "ready-for-agent", "wip": "in-progress", "done": "done", "needs_human": "needs-human",
+                   "refine": "needs-refinement"},
         "blocked_by_heading": "blocked by",
         "key_pattern": r"^([A-Za-z][A-Za-z0-9]*-\d+[a-z]?)\b",
         "closed_counts_as_done": True,
@@ -42,6 +43,10 @@ DEFAULTS = {
     },
     "merge": {"policy": "pause", "max_open_prs": 1, "poll_seconds": 120},
     "loop": {
+        # before implement: "off" | "check" (script check, skip failing tickets) | "auto" (+ one lean LLM proposal)
+        "refine": "check",
+        # tickets at the same time (each its own worktree and process), never more than merge.max_open_prs open PRs
+        "parallel": 1,
         "max_fix_rounds": 2, "max_review_rounds": 2, "timeout_seconds": 3600,
         "max_ci_rounds": 2, "max_comment_rounds": 2,  # per PR, after it is open (agent-kit address / run --wait)
         # red/green: the branch's new tests must fail on the base; gate null = first gate named *test*
@@ -50,9 +55,11 @@ DEFAULTS = {
     },
     # escalate: model for the last gate-fix and the last review-fix round (null = models.implement)
     "models": {"implement": "sonnet", "review": "opus", "review_light": "sonnet", "summarize": "haiku",
-               "triage": "haiku", "escalate": None},
+               "triage": "haiku", "escalate": None, "refine": "sonnet"},
     "effort": {"implement": None, "review": None, "summarize": "low"},
-    "budget_usd": {"implement": 8, "fix": 3, "review": 3, "summarize": 0.5, "triage": 0.3},
+    "budget_usd": {"implement": 8, "fix": 3, "review": 3, "summarize": 0.5, "triage": 0.3, "refine": 0.5},
+    # the script check: items under criteria_heading; max_chars 0 = no limit; above max_criteria = too big
+    "refine": {"criteria_heading": "acceptance criteria", "max_chars": 8000, "max_criteria": 8},
     "implement": {
         "permission_mode": "acceptEdits",
         "tools": "Bash,Read,Edit,Write,Glob,Grep",

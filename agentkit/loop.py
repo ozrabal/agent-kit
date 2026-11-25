@@ -8,14 +8,17 @@ per ticket:  pick (script) -> label in-progress -> worktree + setup -> context p
 between:     merge policy "pause": stop (or --wait: poll gh, no LLM) until the PR merges,
              then reconcile: label done, close issue, remove worktree.
 """
+import contextlib
 import json
+import os
 import re
 import shutil
+import sys
 import time
 from pathlib import Path
 from string import Template
 
-from . import followup, gates, hooks, kb, llm, tdd
+from . import followup, gates, hooks, kb, llm, parallel, refine, report, tdd
 from .config import FIXING_REVIEW, IMPLEMENTING, READ_ONLY_BASH, fmt, runs_dir
 from .tracker import make
 from .util import KIT_DIR, clip, compact, log, out, read_json, sh, slug, write_json
@@ -111,14 +114,15 @@ def _pathspec_excludes(patterns):
     return res
 
 
-def has_criteria(body):
-    """True when a ticket states acceptance criteria: such a heading or a markdown checklist."""
-    return bool(re.search(r"(?im)^#+\s*acceptance criteria\b|^\s*[-*]\s+\[[ xX]\]", body or ""))
+def has_criteria(body, heading="acceptance criteria"):
+    """True when a ticket states acceptance criteria: such a heading (refine.criteria_heading) or a markdown checklist."""
+    return refine.criteria(body, heading) is not None or bool(re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]", body or ""))
 
 
 TIERS = ("skip", "light", "full")
 FOLLOWING = ("pr_open", "fixing-review-comments", "fixing-review-ci")  # polled; a fix status = interrupted fix
 POLLS_KEPT = 50  # state.json keeps the last polls only; --wait polls every merge.poll_seconds
+LOCKS_KEPT = 40  # state.json keeps the last lock events (taken, released, stale, busy)
 
 
 def review_plan(cfg, changed, diff_lines, body="", reviewed=None):
@@ -139,7 +143,8 @@ def _plan(cfg, changed, diff_lines, body):
     risky = next((p for p in changed if r["risky_paths"] and kb.matches(p, r["risky_paths"])), None)
     if risky:
         return {"run": True, "model": m["review"], "reason": f"risky path {risky}", "tier": "full"}
-    if changed and r["skip_under_lines"] > 0 and diff_lines <= r["skip_under_lines"] and not has_criteria(body):
+    if changed and r["skip_under_lines"] > 0 and diff_lines <= r["skip_under_lines"] \
+            and not has_criteria(body, cfg["refine"]["criteria_heading"]):
         return {"run": False, "model": None, "tier": "skip",
                 "reason": f"{diff_lines} changed lines <= review.skip_under_lines ({r['skip_under_lines']})"}
     if not changed:
@@ -158,9 +163,10 @@ def fix_model(cfg, rnd, last):
 
 
 class Loop:
-    def __init__(self, cfg, claude=llm.claude, tracker=None):
+    def __init__(self, cfg, claude=llm.claude, tracker=None, child_cmd=None):
         self.cfg = cfg
-        self.claude = claude  # tests pass a fake (and a fake tracker)
+        self.claude = claude  # tests pass a fake (and a fake tracker, and the command a parallel child runs)
+        self.child_cmd = child_cmd or (lambda n: [sys.executable, str(KIT_DIR / "bin" / "agent-kit"), "run", "--ticket", str(n)])
         self.root = Path(cfg["_root"])
         self.tr = tracker or make(cfg)
         self.base = cfg["branch"]["base"]
@@ -195,42 +201,220 @@ class Loop:
         return [r for r in all_runs(self.cfg) if r["status"] in ("pr_open", "needs_human")]
 
     def status_lines(self):
-        lines = []
+        """`agent-kit status`: ready, blocked and not-ready (refine) tickets, then runs. No LLM, no GitHub writes."""
+        lines, shown, mode = [], set(), self.cfg["loop"]["refine"]
         for c in self.tr.candidates():
-            state = "READY  " if not c["unmet"] else "BLOCKED"
-            why = f" waits on {', '.join('#%d' % u for u in c['unmet'])}" if c["unmet"] else ""
-            lines.append(f"{state} #{c['number']} {c['title']}{why}")
+            chk = refine.check(c.get("body"), self.cfg["refine"]) if mode != "off" else {"ok": True}
+            if c["unmet"]:
+                lines.append(f"BLOCKED #{c['number']} {c['title']} waits on {', '.join('#%d' % u for u in c['unmet'])}")
+            elif not chk["ok"]:
+                shown.add(c["number"])
+                lines.append(f"REFINE  #{c['number']} {c['title']}: not ready: {'; '.join(chk['reasons'])}")
+            else:
+                lines.append(f"READY   #{c['number']} {c['title']}")
         for r in all_runs(self.cfg):
+            if not r["status"]:  # refine records only (the ticket never ran)
+                note = report.refine_note(r.s)
+                if note and r["number"] not in shown:
+                    waits = (r["refine"] or {}).get("proposed") and not (r["refine_apply"] or {}).get("done")
+                    labelled = f", labelled {self.cfg['tracker']['labels']['refine']}" if waits else ""
+                    lines.append(f"REFINE  #{r['number']} {r['title']}: {note}{labelled}")
+                continue
             if r["status"] not in ("done",):
                 usd = sum((llm.cost_summary(r.cost_log) or {}).get(k, {}).get("usd", 0)
                           for k in (llm.cost_summary(r.cost_log) or {}))
                 note = followup.status_note(r.s, self.cfg["loop"])
-                lines.append(f"RUN    #{r['number']} {r['key']} status={r['status']} "
+                held = parallel.holder(r.dir / "lock")
+                batch = (r["parallel"] or {}).get("batch") or []
+                working = r["status"] in ("queued", IMPLEMENTING) or str(r["status"])[len(FIXING_REVIEW):].isdigit()
+                if len(batch) > 1 and working:
+                    note = (f"{note}; " if note else "") + "batch " + ", ".join(f"#{x}" for x in batch)
+                if held:
+                    note = f"locked by pid {held['pid']} since {time.strftime('%H:%M', time.localtime(held['ts']))}" \
+                           + (f"; {note}" if note else "")
+                lines.append(f"RUN     #{r['number']} {r['key']} status={r['status']} "
                              f"pr={r['pr'] or '-'} cost=${usd:.2f}" + (f" | {note}" if note else ""))
         return lines
 
-    def pick(self, number=None):
+    def pick(self, number=None, dry=False):
+        """The ticket to do next: `number`, or the lowest ready one with no unmet blockers. Each goes through
+        refine() first, except a ticket whose run already exists (resuming). dry: the check only, nothing written."""
+        mode = self.cfg["loop"]["refine"]
+        mode = "check" if dry and mode == "auto" else mode
         if number:
             i = self.tr.get(number)
-            return {**i, "key": self.tr.key(i), "blocked_by": self.tr.blockers(i)}
+            c = {**i, "key": self.tr.key(i), "blocked_by": self.tr.blockers(i)}
+            return c if Run(self.cfg, number)["status"] or self.refine(c, mode, record=not dry) else None
         for c in self.tr.candidates():
-            if not c["unmet"]:
+            if not c["unmet"] and self.refine(c, mode, record=not dry):
                 return c
         return None
+
+    # --- refine: is the ticket ready? ----------------------------------------
+    def refine(self, issue, mode=None, record=True):
+        """The script check (no LLM); on a failure in "auto" mode, one lean LLM proposal posted as a comment and
+        the label swapped ready -> refine. At most one proposal per body version (state.json or the kit's
+        comment). Returns True when the ticket may be implemented. record=False: check and log only."""
+        c, n = self.cfg, issue["number"]
+        mode = mode or c["loop"]["refine"]
+        if mode == "off":
+            return True
+        chk = refine.check(issue.get("body"), c["refine"])
+        key = issue.get("key") or self.tr.key(issue)
+        if chk["ok"]:
+            log(f"refine: {key} ready ({chk['criteria']} criteria)")
+        else:
+            log(f"refine: {key} not ready: {'; '.join(chk['reasons'])}")
+        if not record:
+            return chk["ok"]
+        run, bh = Run(c, n), refine.body_hash(issue.get("body"))
+        prev = run["refine"] or {}
+        row = {"ts": int(time.time()), "mode": mode, "ok": chk["ok"], "reasons": chk["reasons"],
+               "criteria": chk["criteria"], "body_hash": bh, "proposed": False}
+        if prev.get("proposed") and prev.get("body_hash") == bh:
+            row.update({k: prev[k] for k in ("proposed", "source", "split", "criteria_proposed", "questions") if k in prev})
+        run.set(key=key, title=issue["title"], refine=row, refine_checks=(run["refine_checks"] or 0) + 1)
+        if chk["ok"]:
+            return True
+        if mode != "auto":
+            log(f"refine: {key} skipped (loop.refine=check: no proposal; `agent-kit refine {n}` makes one)")
+        elif row["proposed"]:
+            log(f"refine: {key} skipped: a proposal for this body is already posted; edit the issue, "
+                f"or `agent-kit refine --apply {n}`")
+        else:
+            self._propose(run, issue, key, chk, row)
+        return False
+
+    def _propose(self, run, issue, key, chk, row):
+        """Post one proposal for this body version (or adopt the kit's comment that already holds it) and swap
+        the label ready -> refine, so the ticket waits for a human."""
+        c, n, bh = self.cfg, issue["number"], row["body_hash"]
+        try:
+            found = refine.latest(self._trusted_comments(n))
+        except ValueError:  # a human broke the JSON of an older proposal: make a new one
+            found = None
+        if found and found.get("body_hash") == bh:
+            prop, row["source"] = found, "comment"
+            log(f"refine: {key}: proposal for this body found in an issue comment; not asking again")
+        else:
+            rf = c["refine"]
+            text = prompt("refine", key=key, title=issue["title"], body=issue.get("body") or "",
+                          reasons="; ".join(chk["reasons"]), context=self._context(issue, key))
+            prop, _ = self.claude(text, cwd=str(self.root), step="refine", model=c["models"]["refine"],
+                                  schema=refine.SCHEMA, lean=True, system=prompt("refine-system", max_criteria=rf["max_criteria"]),
+                                  tools="", budget=c["budget_usd"]["refine"], timeout=c["loop"]["timeout_seconds"],
+                                  cost_log=run.cost_log)
+            self.tr.issue_comment(n, refine.render_comment(prop, chk, bh, n))
+            row["source"] = "llm"
+            log(f"refine: {key}: proposal posted ({len(prop['criteria'])} criteria, {len(prop['split'])} split, "
+                f"{len(prop['questions'])} questions)")
+        if c["tracker"]["labels"]["refine"] not in self.tr.get(n)["labels"]:
+            self.tr.set_status(n, "ready", "refine")  # removes ready only when it is there
+        row.update(proposed=True, split=len(prop.get("split") or []), criteria_proposed=len(prop.get("criteria") or []),
+                   questions=len(prop.get("questions") or []))
+        run.set(refine=row)
+        log(f"refine: {key} labelled {c['tracker']['labels']['refine']}; set {c['tracker']['labels']['ready']} again when it is right")
+
+    def refine_apply(self, n):
+        """`agent-kit refine --apply <n>`: the latest trusted kit proposal (as a human may have edited it). A split
+        creates the issues in order (labelled refine, "Blocked by" from the plan plus the parent's blockers),
+        then closes the parent as not planned; else the criteria go into the body. Nothing gets the ready
+        label: a human sets it. Progress is in state.json (refine_apply), so a rerun after a crash continues.
+        Returns an exit code."""
+        c, run, issue = self.cfg, Run(self.cfg, n), self.tr.get(n)
+        key, t = self.tr.key(issue), c["tracker"]
+        try:
+            prop = refine.latest(self._trusted_comments(n))
+        except ValueError as e:
+            log(f"refine: {key}: {e}; fix the block in the comment and run again")
+            return 1
+        if not prop:
+            log(f"refine: {key}: no proposal from agent-kit in the issue comments; run `agent-kit refine {n}` first")
+            return 1
+        done = run["refine_apply"] or {}
+        if done.get("proposal") != prop.get("body_hash"):
+            done = {}  # a newer proposal: start over
+        if done.get("done"):
+            log(f"refine: {key}: proposal already applied ({done['kind']}"
+                + (f": {', '.join('#%d' % x for x in done['created'])}" if done.get("created") else "") + ")")
+            return 0
+        if prop.get("body_hash") != refine.body_hash(issue.get("body")):
+            log(f"refine: {key}: the issue body changed since the proposal; applying it anyway")
+        split = prop.get("split") or []
+        errs = refine.split_errors(split)
+        if split and errs:
+            log(f"refine: {key}: cannot split: {'; '.join(errs)}; fix the block in the comment and run again")
+            return 1
+        row = {"ts": int(time.time()), "kind": "split" if split else "criteria", "created": done.get("created") or [],
+               "proposal": prop.get("body_hash"), "commented": bool(done.get("commented")), "done": False}
+        if split:
+            blockers = self.tr.blockers(issue)
+            for item in split[len(row["created"]):]:
+                body = refine.split_body(item, row["created"], n, blockers, c["refine"]["criteria_heading"],
+                                         t["blocked_by_heading"])
+                made = self._split_made(n, item["title"], row["created"])  # created before a crash?
+                if made:
+                    log(f"refine: {key}: #{made} {item['title']} already exists; reusing it")
+                else:
+                    made = self.tr.create_issue(item["title"], body, [t["labels"]["refine"]])
+                    log(f"refine: {key}: created #{made} {item['title']}")
+                row["created"].append(made)
+                run.set(refine_apply=row)
+            made = ", ".join(f"#{x}" for x in row["created"])
+            if not done.get("commented"):
+                self.tr.issue_comment(n, f"Split into {made}. Closing this one; set {t['labels']['ready']} on each "
+                                         f"part when it is right.\n\n{followup.MARKER}")
+                row["commented"] = True
+                run.set(refine_apply=row)
+            self.tr.remove_label(n, "refine")
+            self.tr.close(n, reason="not planned")
+            log(f"refine: {key}: split into {made}; closed as not planned")
+        elif prop.get("criteria"):
+            self.tr.edit_body(n, refine.with_criteria(issue.get("body"), prop["criteria"], c["refine"]["criteria_heading"],
+                                                      t["blocked_by_heading"]))
+            log(f"refine: {key}: {len(prop['criteria'])} criteria written into the body; set {t['labels']['ready']} "
+                "when it is right")
+        else:
+            log(f"refine: {key}: the proposal has no criteria and no split; answer its questions in the issue")
+            return 1
+        run.set(key=key, title=issue["title"], refine_apply={**row, "done": True})
+        return 0
+
+    def _trusted_comments(self, n):
+        """The issue's comments by trusted authors (pr.trusted_associations): only those can hold a proposal."""
+        return [x for x in self.tr.issue_comments(n) if x.get("association") in self.cfg["pr"]["trusted_associations"]]
+
+    def _split_made(self, parent, title, created):
+        """An open issue an earlier, interrupted --apply already created for this split part, or None."""
+        head = f"Split from #{parent}."
+        for num, i in sorted(self.tr.issues().items()):
+            if num not in created and i["state"] == "OPEN" and i["title"] == title and (i.get("body") or "").startswith(head):
+                return num
+        return None
+
+    def _context(self, issue, key):
+        """The context pack for a ticket from the main checkout's knowledge base."""
+        c = self.cfg
+        if not (kb.kdir(c, self.root) / "files.jsonl").exists():
+            return "(no knowledge base yet)"
+        related = [self.tr.key(self.tr.get(b)) for b in issue.get("blocked_by", [])]
+        return kb.context(c, self.root, f"{issue['title']}\n{issue['body']}", key=key, related_keys=related)
 
     # --- workspace ---------------------------------------------------------
     def workspace(self, run, issue):
         w = self.cfg["workspace"]
         branch = run["branch"] or fmt(self.cfg["branch"]["name"], self.cfg,
                                       key=issue["key"].lower().lstrip("#"), slug=slug(issue["title"].split(":", 1)[-1]))
-        sh(["git", "fetch", self.remote, self.base], cwd=self.root)
+        with self._git_lock():
+            sh(["git", "fetch", self.remote, self.base], cwd=self.root)
         if w["mode"] == "worktree":
             ws = Path(fmt(w["dir"], self.cfg)).resolve() / branch
             if not ws.exists():
                 ws.parent.mkdir(parents=True, exist_ok=True)
-                exists = sh(["git", "rev-parse", "--verify", branch], cwd=self.root, check=False).returncode == 0
-                args = [str(ws), branch] if exists else ["-b", branch, str(ws), self.upstream]
-                sh(["git", "worktree", "add", *args], cwd=self.root)
+                with self._git_lock():
+                    exists = sh(["git", "rev-parse", "--verify", branch], cwd=self.root, check=False).returncode == 0
+                    args = [str(ws), branch] if exists else ["-b", branch, str(ws), self.upstream]
+                    sh(["git", "worktree", "add", *args], cwd=self.root)
                 for cmd in w["setup"]:
                     log(f"setup: {cmd}")
                     sh(fmt(cmd, self.cfg), cwd=ws, env=gates.env(self.cfg), timeout=1800)
@@ -248,6 +432,10 @@ class Loop:
         return ws
 
     # --- helpers -----------------------------------------------------------
+    def _git_lock(self):
+        """Parallel runs share the main repo's .git (config, refs): fetch, worktree add and push take turns."""
+        return parallel.flock(runs_dir(self.cfg) / "git.lock")
+
     def _has_changes(self, ws):
         return bool(out(["git", "status", "--porcelain"], cwd=ws)) or bool(
             out(["git", "rev-list", f"{self.upstream}..HEAD"], cwd=ws))
@@ -324,10 +512,7 @@ class Loop:
     def do_ticket(self, issue, dry=False):
         c, n, key = self.cfg, issue["number"], issue["key"]
         run = Run(c, n)
-        ctx_cwd = self.root
-        related = [self.tr.key(self.tr.get(b)) for b in issue.get("blocked_by", [])]
-        ctx = kb.context(c, ctx_cwd, f"{issue['title']}\n{issue['body']}", key=key, related_keys=related) \
-            if (kb.kdir(c, ctx_cwd) / "files.jsonl").exists() else "(no knowledge base yet)"
+        ctx = self._context(issue, key)
         gate_names = ", ".join(g["name"] for g in map(gates._norm, c["gates"])) or "(none)"
         impl_prompt = prompt("implement", key=key, number=n, title=issue["title"], body=issue["body"] or "",
                              context=ctx, gate_names=gate_names, pr_sections=", ".join(c["pr"]["sections"]))
@@ -336,6 +521,39 @@ class Loop:
             log(f"dry run: {key} would start; prompt is {len(impl_prompt)} chars (~{len(impl_prompt) // 4} tokens)")
             return True
 
+        with self._ticket_lock(run, key) as busy:
+            return False if busy else self._work(run, issue, ctx, impl_prompt)
+
+    @contextlib.contextmanager
+    def _ticket_lock(self, run, key):
+        """Hold .agent/runs/<n>/lock (with a heartbeat) while working on a ticket or its PR. Yields None when held,
+        or the live holder ({pid, ts}) when another run has it (the caller skips). Every event is logged and kept in
+        state.json "locks"."""
+        lock = run.dir / "lock"
+        got = parallel.take(lock)
+        if got["stale"] is not None:
+            self._lock_event(run, "stale", got["stale"].get("pid"))
+            log(f"{key}: stale lock of pid {got['stale'].get('pid')} removed (that run is gone)")
+        if not got["taken"]:
+            self._lock_event(run, "busy", got["holder"]["pid"])
+            log(f"{key}: locked by pid {got['holder']['pid']} (another agent-kit run); skipped")
+            yield got["holder"]
+            return
+        self._lock_event(run, "taken", os.getpid())
+        log(f"{key}: lock taken (pid {os.getpid()})")
+        try:
+            with parallel.hold(lock):
+                yield None
+        finally:
+            parallel.release(lock)
+            self._lock_event(run, "released", os.getpid())
+            log(f"{key}: lock released")
+
+    def _lock_event(self, run, event, pid):
+        run.set(locks=((run["locks"] or []) + [{"ts": int(time.time()), "event": event, "pid": pid}])[-LOCKS_KEPT:])
+
+    def _work(self, run, issue, ctx, impl_prompt):
+        c, n, key = self.cfg, issue["number"], issue["key"]
         log(f"=== {key} (#{n}): {issue['title']}")
         run.set(key=key, title=issue["title"], status=IMPLEMENTING)
         (run.dir / "context.md").write_text(ctx)
@@ -442,7 +660,8 @@ class Loop:
             kb.update(c, ws, cost_log=run.cost_log)
             self._commit(ws, f"{key}: update knowledge base")
             log(f"kb: ticket note written, {added} lessons added")
-        sh(["git", "push", "-u", self.remote, run["branch"]], cwd=ws)
+        with self._git_lock():
+            sh(["git", "push", "-u", self.remote, run["branch"]], cwd=ws)
         body = self._pr_body(issue, impl, run, failure)
         bf = run.dir / "pr.md"
         bf.write_text(body)
@@ -523,7 +742,15 @@ class Loop:
                 self._address_safely(r)
 
     def _address_safely(self, r):
-        """address(), with an error recorded as a poll row; one inside a fix makes the run needs_human."""
+        """address() under the ticket lock, with an error recorded as a poll row; one inside a fix makes the run
+        needs_human. A run whose lock another process holds is skipped (a poll row says so)."""
+        with self._ticket_lock(r, r["key"]) as busy:
+            if busy:
+                self._poll(r, comments=0, note=f"skipped: locked by pid {busy['pid']}")
+                return False
+            return self._address_unlocked(r)
+
+    def _address_unlocked(self, r):
         try:
             self.address(r)
             return True
@@ -639,7 +866,8 @@ class Loop:
         elif out(["git", "rev-parse", "HEAD"], cwd=ws) == head:
             row["result"] = "no changes"
         else:
-            sh(["git", "push", self.remote, run["branch"]], cwd=ws)
+            with self._git_lock():
+                sh(["git", "push", self.remote, run["branch"]], cwd=ws)
             row["result"], row["commit"] = "pushed", out(["git", "rev-parse", "--short", "HEAD"], cwd=ws)
         run.set(status="pr_open", follow_ups=(run["follow_ups"] or []) + [row])
         log(f"{key}: {step}: {row['result']}" + (f" {row['commit']}" if row.get("commit") else ""))
@@ -664,7 +892,8 @@ class Loop:
     def run(self, ticket=None, wait=False, max_tickets=None, dry=False):
         done = 0
         while True:
-            self.reconcile()
+            if not os.environ.get(parallel.CHILD_ENV):  # a parallel child: the parent reconciled
+                self.reconcile()
             self.tr.issues(refresh=True)
             pending = self.waiting()
             if not ticket and len(pending) >= self.cfg["merge"]["max_open_prs"] and not dry:
@@ -679,7 +908,18 @@ class Loop:
                 continue
             if max_tickets is not None and done >= max_tickets:
                 return 0
-            issue = self.pick(ticket)
+            n = parallel.slots(self.cfg["loop"]["parallel"], self.cfg["merge"]["max_open_prs"], len(pending))
+            n = n if max_tickets is None else min(n, max_tickets - done)
+            if not ticket and not dry and n > 1:
+                code, count = self._batch(n)
+                if not count:
+                    log("nothing unblocked to do.")
+                    return 0
+                done += count
+                if code:
+                    return code
+                continue
+            issue = self.pick(ticket, dry=dry)
             if not issue:
                 log("nothing unblocked to do.")
                 for l in self.status_lines():
@@ -689,6 +929,50 @@ class Loop:
             done += 1
             if dry or ticket or not ok:
                 return 0 if ok else 2
+
+    def _batch(self, n):
+        """Up to n independent ready tickets at the same time, one `agent-kit run --ticket N` process each.
+        This process prepares what the children would race on: the kb index (they only read it) and the
+        worktrees (git config writes). Returns (exit code, tickets started)."""
+        c = self.cfg
+        cands = self.tr.candidates()
+        locked = {x["number"]: h for x in cands for h in [parallel.holder(Run(c, x["number"]).dir / "lock")] if h}
+        sel = parallel.select(cands, n, locked, ready=self.refine)
+        left = "; ".join(f"#{x['number']} {x['why']}" for x in sel["left"])
+        if not sel["picked"]:
+            log("parallel: nothing to start" + (f" ({left})" if left else ""))
+            return 0, 0
+        log(f"parallel: {', '.join('#%d' % x for x in sel['picked'])} in {n} slot(s)" + (f"; left out: {left}" if left else ""))
+        issues, ts = {x["number"]: x for x in cands}, int(time.time())
+        row = {"ts": ts, "batch": sel["picked"], "slots": n, "left": sel["left"]}
+        if len(sel["picked"]) == 1:  # nothing to run beside it: this process does it
+            num = sel["picked"][0]
+            Run(c, num).set(parallel=row)
+            return (0 if self.do_ticket(issues[num]) else 2), 1
+        if (kb.kdir(c, self.root) / "files.jsonl").exists():
+            kb.index(c, self.root).close()
+        started, failed = [], False
+        for num in sel["picked"]:
+            run = Run(c, num)
+            try:
+                self.workspace(run, issues[num])
+            except RuntimeError as e:  # this ticket only; the others still run
+                failed = True
+                run.set(key=issues[num]["key"], title=issues[num]["title"], parallel={**row, "error": str(e)[:500]})
+                log(f"parallel: #{num} not started: worktree setup failed: {str(e)[:300]}")
+                continue
+            run.set(key=issues[num]["key"], title=issues[num]["title"], status="queued", parallel=row)
+            started.append(num)
+        try:
+            res = parallel.run_children({num: self.child_cmd(num) for num in started}, cwd=str(self.root))
+        except KeyboardInterrupt:
+            log("parallel: interrupted; the children were stopped (`agent-kit run --ticket N` resumes one)")
+            raise
+        for num, r in sorted(res.items()):
+            run = Run(c, num)
+            run.set(parallel={**run["parallel"], **r})
+            log(f"parallel: #{num} exited {r['exit']} after {r['secs']}s (status {run['status']})")
+        return max(parallel.worst(res), 2 if failed else 0), len(sel["picked"])
 
 
 def _findings_md(block, unmet):

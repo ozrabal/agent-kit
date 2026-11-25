@@ -149,11 +149,11 @@ class Report(unittest.TestCase):
                  [call("implement", 1.25, i=1000, o=20), call("fix-gates:1", 0.5), call("fix-gates:2", 0.5)])
         lines = report.render(report.collect(self.runs)).splitlines()
         self.assertEqual(lines[0].split(), ["ticket", "status", "usd", "calls", "fix", "review", "escal", "rv_skip", "rv_light", "rv_full",
-                                        "rv_usd", "rv_in", "rv_cache_r", "polls", "triaged", "tr_usd", "cm_fix", "ci_fix", "human", "gates", "tdd", "hooks",
+                                        "rv_usd", "rv_in", "rv_cache_r", "polls", "triaged", "tr_usd", "cm_fix", "ci_fix", "human", "rf_chk", "rf_fail", "rf_prop", "rf_usd", "rf_appl", "rf_split", "par", "lk_stale", "lk_busy", "gates", "tdd", "hooks",
                                             "edit_blk", "stop_blk", "guard_blk", "hook_err", "in", "cache_r", "out"])
-        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0.00", "0", "0", "0", "FAIL", "-", "0", "0", "0", "0", "0",
+        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "FAIL", "-", "0", "0", "0", "0", "0",
                                             "1000", "0", "20"])
-        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0", "0", "1000", "0", "20"])
+        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "1000", "0", "20"])
 
     def test_review_decisions_and_review_cost(self):
         def rv(tier):
@@ -170,6 +170,62 @@ class Report(unittest.TestCase):
         self.assertEqual(rep["total"]["review_light"], 2)
         for m in ("review_skipped", "review_light", "review_full", "review_usd", "review_cache_r"):
             self.assertIn(m, report.METRICS)
+
+
+
+class RefineParallel(unittest.TestCase):
+    """#17: refine checks/proposals/applies, parallel batches and lock events are counted and listed."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.runs = Path(self.tmp.name)
+
+    def test_counts(self):
+        make_run(self.runs, 158, {"key": "#158", "title": "Make the CLI nicer", "refine_checks": 3,
+                                  "refine": {"ok": False, "mode": "auto", "reasons": ["no 'acceptance criteria' section"],
+                                             "proposed": True, "source": "llm", "split": 2, "criteria_proposed": 0, "questions": 1},
+                                  "refine_apply": {"kind": "split", "created": [301, 302], "done": True}},
+                 [call("refine", 0.02)])
+        make_run(self.runs, 153, {"key": "#153", "status": "pr_open", "refine_checks": 1, "refine": {"ok": True},
+                                  "parallel": {"batch": [153, 156], "exit": 0},
+                                  "locks": [{"event": "stale", "pid": 9}, {"event": "taken", "pid": 10},
+                                            {"event": "released", "pid": 10}, {"event": "busy", "pid": 11}]},
+                 [call("implement", 0.05)])
+        rows = {r["ticket"]: r for r in report.collect(self.runs)["rows"]}
+        self.assertEqual({k: rows[158][k] for k in report.REFINE + report.PARALLEL},
+                         {"refine_checks": 3, "refine_failed": 1, "refine_proposed": 1, "refine_usd": 0.02,
+                          "refine_applied": 1, "split_created": 2, "parallel": 0, "lock_stale": 0, "lock_busy": 0})
+        self.assertEqual({k: rows[153][k] for k in report.REFINE + report.PARALLEL},
+                         {"refine_checks": 1, "refine_failed": 0, "refine_proposed": 0, "refine_usd": 0,
+                          "refine_applied": 0, "split_created": 0, "parallel": 1, "lock_stale": 1, "lock_busy": 1})
+        self.assertIn("refine_usd", report.MONEY)
+        self.assertTrue(set(report.REFINE + report.PARALLEL) <= set(report.METRICS))
+        self.assertTrue(set(report.REFINE + report.PARALLEL) <= {k for _, k in report.COLUMNS})
+        self.assertIn("rf_usd", report.render(report.collect(self.runs)))
+
+    def test_single_pick_is_not_a_parallel_run(self):
+        make_run(self.runs, 9, {"parallel": {"batch": [9], "slots": 2, "left": []}}, [])
+        self.assertEqual(report.collect(self.runs)["rows"][0]["parallel"], 0)
+
+    def test_log_lines(self):
+        lines = report.run_lines({
+            "refine": {"ok": False, "mode": "auto", "reasons": ["no 'acceptance criteria' section"], "proposed": True,
+                       "source": "llm", "split": 2, "criteria_proposed": 0, "questions": 1},
+            "refine_checks": 2, "refine_apply": {"kind": "split", "created": [301, 302], "done": True},
+            "parallel": {"batch": [153, 156], "slots": 2, "left": [{"number": 154, "why": "waits on #153"}],
+                         "pid": 77, "exit": 0, "secs": 41.5},
+            "locks": [{"ts": 1, "event": "stale", "pid": 9}, {"ts": 2, "event": "taken", "pid": 10}]})
+        self.assertEqual(lines, [
+            "## refine",
+            "auto: NOT READY (no 'acceptance criteria' section), 2 check(s)",
+            "proposal posted (llm): 0 criteria, 2 split, 1 question(s)",
+            "applied: split -> #301, #302",
+            "## parallel",
+            "batch #153, #156 in 2 slot(s); left out: #154 waits on #153",
+            "child pid 77: exit 0 after 41.5s",
+            "## locks",
+            "stale pid 9", "taken pid 10"])
 
 
 if __name__ == "__main__":

@@ -25,6 +25,10 @@ def main(argv=None):
     p = sub.add_parser("address", help="handle new PR review comments and failed CI for a ticket's open PR now")
     p.add_argument("ticket", type=int)
 
+    p = sub.add_parser("refine", help="check a ticket is ready (criteria, size); if not, post an LLM proposal and label it")
+    p.add_argument("ticket", type=int)
+    p.add_argument("--apply", action="store_true", help="apply the posted proposal: criteria into the body, or create the split issues")
+
     sub.add_parser("status", help="ready/blocked tickets and runs with cost")
     sub.add_parser("next", help="print the next unblocked ticket as JSON")
     sub.add_parser("reconcile", help="mark merged PRs done and clean up worktrees")
@@ -160,10 +164,15 @@ def main(argv=None):
         lp.reconcile()
         print("\n".join(lp.status_lines()) or "no tickets")
     elif a.cmd == "next":
-        i = lp.pick()
+        i = lp.pick(dry=True)
         print(json.dumps({k: i[k] for k in ("number", "key", "title", "blocked_by")} if i else None))
     elif a.cmd == "reconcile":
         lp.reconcile()
+    elif a.cmd == "refine":
+        if a.apply:
+            return lp.refine_apply(a.ticket)
+        i = lp.tr.get(a.ticket)
+        return 0 if lp.refine({**i, "key": lp.tr.key(i)}, mode="auto") else 1
     elif a.cmd == "address":
         lp.reconcile()
         return lp.address_now(a.ticket)

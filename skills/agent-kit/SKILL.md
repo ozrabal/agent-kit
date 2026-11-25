@@ -46,13 +46,21 @@ curl | sh, gh pr merge). A block is not an error to work around: do what the mes
 
 - `agent-kit doctor`: checks tools, auth, config, labels, base branch, gates and knowledge base, with a
   fix hint for each failure. Run it first when a run fails for setup reasons.
-- `agent-kit status`: ready and blocked tickets, running PRs and their cost.
+- `agent-kit status`: ready, blocked and not-ready (refine) tickets, running PRs, their cost and lock holder.
 - `agent-kit report [--json] [--since <ts>]`: cost, tokens, fix and review rounds, escalated rounds, red/green
   result, review decisions (skipped / light / full) and hook blocks per ticket run.
 - With `loop.tdd.enabled`, the tests you add must fail on the base branch: they are run there with the
   old code, and tests that pass without your change (or no tests) come back as a review finding.
-- `agent-kit run [--ticket N] [--wait] [--max N] [--dry-run]`: one ticket at a time, dependency
-  aware; pauses for the human to merge each PR. `--wait` polls open PRs: no LLM cost unless there are
+- `agent-kit refine <issue>`: is the ticket ready (an "Acceptance criteria" section with items, not too
+  long, not too many criteria)? If not, one lean LLM call posts a proposal (criteria, a split, questions) as an
+  issue comment and labels it `needs-refinement`. `refine --apply <issue>` applies the posted proposal (edit its
+  JSON block first if needed): criteria into the body, or split issues created with "Blocked by" and the
+  parent closed. Nothing gets the ready label back automatically. Before each ticket the loop runs the same
+  check (`loop.refine`: `check` skips not-ready tickets, `auto` also proposes, `off`).
+- `agent-kit run [--ticket N] [--wait] [--max N] [--dry-run]`: dependency aware; pauses for the human to
+  merge each PR. With `loop.parallel` > 1, independent ready tickets run at the same time, each in its own
+  worktree and process (output prefixed `[agent-kit #N]`); `.agent/runs/<issue>/lock` keeps two runs off
+  one ticket (a crashed run's lock is replaced). `--wait` polls open PRs: no LLM cost unless there are
   new review comments (lean triage, then a fix if asked) or failed CI on a new head SHA.
 - `agent-kit address <issue>`: handle new review comments and failed CI on that ticket's open PR now.
   Reply drafts land in `.agent/runs/<issue>/replies.md` (posted only with `pr.post_replies`). When the
