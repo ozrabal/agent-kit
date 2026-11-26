@@ -101,10 +101,13 @@ class Report(unittest.TestCase):
                 {"event": "stop", "outcome": "give_up", "cwd": "/wt/7-add"},
                 {"event": "stop", "outcome": "error", "cwd": "/wt/7-add"},
                 {"event": "stop", "outcome": "block", "cwd": "/wt/7-additional"},
-                {"event": "stop", "outcome": "pass", "cwd": "/somewhere/else"}]
+                {"event": "stop", "outcome": "pass", "cwd": "/somewhere/else"},
+                {"event": "gates", "outcome": "block", "cwd": "/wt/7-add"},
+                {"event": "gates", "outcome": "pass", "cwd": "/wt/7-add"}]
         (self.runs / "hooks.jsonl").write_text("".join(json.dumps(r) + "\n" for r in hook))
         a, b = report.collect(self.runs)["rows"]
-        self.assertEqual((a["hook_calls"], a["edit_blocks"], a["stop_blocks"], a["hook_errors"]), (6, 1, 2, 1))
+        self.assertEqual((a["hook_calls"], a["edit_blocks"], a["stop_blocks"], a["hook_errors"]), (8, 1, 2, 1))
+        self.assertEqual((a["gates_blocks"], b["gates_blocks"]), (1, 0))
         self.assertEqual((b["hook_calls"], b["edit_blocks"], b["stop_blocks"], b["hook_errors"]), (0, 0, 0, 0))
 
     def test_guard_denials_counted(self):
@@ -150,10 +153,10 @@ class Report(unittest.TestCase):
         lines = report.render(report.collect(self.runs)).splitlines()
         self.assertEqual(lines[0].split(), ["ticket", "status", "usd", "calls", "fix", "review", "escal", "rv_skip", "rv_light", "rv_full",
                                         "rv_usd", "rv_in", "rv_cache_r", "polls", "triaged", "tr_usd", "cm_fix", "ci_fix", "human", "rf_chk", "rf_fail", "rf_prop", "rf_usd", "rf_appl", "rf_split", "par", "lk_stale", "lk_busy", "gates", "tdd", "hooks",
-                                            "edit_blk", "stop_blk", "guard_blk", "hook_err", "in", "cache_r", "out"])
-        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "FAIL", "-", "0", "0", "0", "0", "0",
+                                            "edit_blk", "stop_blk", "guard_blk", "gates_blk", "hook_err", "in", "cache_r", "out"])
+        self.assertEqual(lines[1].split(), ["#3", "needs_human", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "FAIL", "-", "0", "0", "0", "0", "0", "0",
                                             "1000", "0", "20"])
-        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "1000", "0", "20"])
+        self.assertEqual(lines[-1].split(), ["total", "2.25", "3", "2", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0.00", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "1000", "0", "20"])
 
     def test_review_decisions_and_review_cost(self):
         def rv(tier):

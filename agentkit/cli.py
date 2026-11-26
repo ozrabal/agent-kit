@@ -2,6 +2,7 @@
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from . import config, gates, kb, llm
@@ -101,10 +102,15 @@ def main(argv=None):
         return 0
 
     if a.cmd == "gates":
+        t0 = time.time()
         if a.fix:
             gates.autofix(cfg, here)
         rep = gates.run(cfg, here, only=a.names or None)
-        print(gates.render(rep))
+        print(gates.render(rep), flush=True)
+        from . import hooks
+        note = hooks.record_gates(cfg, here, rep, t0)  # only inside a loop run's worktree
+        if note:
+            print(note, file=sys.stderr)
         return 0 if rep["ok"] else 1
 
     if a.cmd == "kb":

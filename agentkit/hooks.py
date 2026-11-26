@@ -1,10 +1,12 @@
 """Claude Code hooks: `agent-kit hook <event>` reads the hook's stdin JSON and runs gates inside
-the session, so Claude fixes errors while it still has the context. No LLM.
+the session, so Claude fixes errors while it still has the context. No LLM. The hook log also gets
+a `gates` row when Claude runs `agent-kit gates` itself during a loop run (record_gates).
 
 Exit 2 blocks (Claude sees the message); anything else is exit 0. A hook never crashes a session:
 an internal error is exit 0 with a short note."""
 import fnmatch
 import json
+import os
 import re
 import shlex
 import threading
@@ -295,11 +297,13 @@ def _relative(path, folder):
 
 def rows_for(rows, state, step=None):
     """Hook rows of one ticket run: by the Claude session ids it recorded (state["sessions"]), so tickets
-    sharing a folder stay apart; runs from before sessions were recorded match by worktree folder."""
+    sharing a folder stay apart; runs from before sessions were recorded match by worktree folder. A row
+    without a session id (an `agent-kit gates` call that got none from Claude) matches by run key, for no step."""
     sessions = [s for s in state.get("sessions") or [] if step is None or s["step"] == step]
     if sessions or state.get("sessions"):
         ids = {s["id"] for s in sessions}
-        return [r for r in rows if r.get("session") in ids]
+        key = state.get("key") if step is None else None
+        return [r for r in rows if r.get("session") in ids or (key and not r.get("session") and r.get("key") == key)]
     return [] if step else [r for r in rows if _inside(r.get("cwd"), state.get("ws"))]
 
 
@@ -357,6 +361,25 @@ def _log(cfg, event, data, row, t0):
     if row.get("note"):
         row["note"] = row["note"][: cfg["hooks"]["note_chars"]]
     append_jsonl(log_path(cfg), row)
+
+
+def record_gates(cfg, cwd, report, t0, env=None):
+    """`agent-kit gates` run inside an active loop run's worktree (Claude checking its own work): one `gates`
+    row in hooks.jsonl, BLOCK with the failures as note, else PASS. Outside a run nothing is logged.
+    The row carries Claude's session id (CLAUDE_CODE_SESSION_ID) and the run key, so rows_for finds it.
+    Never raises, like a hook: returns a message for stderr when the row could not be written, else None."""
+    try:
+        state = active_run(cfg, cwd)
+        if state is None:
+            return None
+        failed = {"results": [r for r in report["results"] if not r["ok"]]}
+        row = _outcome(BLOCK, note=gates.render(failed)) if failed["results"] else _outcome(PASS)
+        env = os.environ if env is None else env
+        data = {"session_id": env.get("CLAUDE_CODE_SESSION_ID"), "cwd": str(cwd)}
+        _log(cfg, "gates", data, {**row[2], "key": state.get("key"), "gates": _gates_row(report)}, t0)
+    except Exception as e:  # the gate output matters more than the log row
+        return f"agent-kit gates: could not log this gates run ({type(e).__name__}: {e})"
+    return None
 
 
 def main(event, raw, load=_load, agent_root=_agent_root, **deps):
