@@ -59,7 +59,7 @@ curl | sh, gh pr merge). A block is not an error to work around: do what the mes
   parent closed. Nothing gets the ready label back automatically. Before each ticket the loop runs the same
   check (`loop.refine`: `check` skips not-ready tickets, `auto` also proposes, `off`).
 - `agent-kit run [--ticket N] [--wait] [--max N] [--dry-run]`: dependency aware; pauses for the human to
-  merge each PR. With `loop.parallel` > 1, independent ready tickets run at the same time, each in its own
+  merge each PR (with `merge.policy: "auto"`, `--wait` polls merge a green PR itself). With `loop.parallel` > 1, independent ready tickets run at the same time, each in its own
   worktree and process (output prefixed `[agent-kit #N]`); `.agent/runs/<issue>/lock` keeps two runs off
   one ticket (a crashed run's lock is replaced). `--wait` polls open PRs: no LLM cost unless there are
   new review comments (lean triage, then a fix if asked) or failed CI on a new head SHA.

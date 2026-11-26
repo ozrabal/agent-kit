@@ -7,6 +7,7 @@ per ticket:  pick (script) -> label in-progress -> worktree + setup -> context p
              -> kb update (script, LLM only for new files) -> push -> PR
 between:     merge policy "pause": stop (or --wait: poll gh, no LLM) until the PR merges,
              then reconcile: label done, close issue, remove worktree.
+             merge policy "auto": the same polls also merge a PR once CI is green and nothing is new.
 """
 import contextlib
 import json
@@ -735,13 +736,45 @@ class Loop:
             self._needs_human(run, dec["reason"], followup.check_lines(dec["failed"]))
         elif dec["action"] == "fix":  # after a push CI runs again on the new head: next poll
             self._fix_ci(run, ci, dec)
+        elif not new and c["merge"]["policy"] == "auto" and run["status"] == "pr_open":
+            return self._auto_merge(run, ci, dec)
+
+    def _auto_merge(self, run, ci, dec):
+        """merge.policy "auto": merge the PR when the script decides it is ready (no LLM). Returns True when
+        merged; reconcile then labels the issue done. A conflict needs a human; a failed merge is retried
+        on the next poll."""
+        c = self.cfg
+        md = followup.merge_decision(self.tr.pr_merge_info(run["pr"]), dec["action"], ci["checks"],
+                                     c["merge"]["require_checks"])
+        row = {"ts": int(time.time()), "sha": ci["sha"], "action": md["action"], "reason": md["reason"]}
+        if md["action"] == "conflict":
+            self._merge_row(run, row)
+            self._needs_human(run, md["reason"], "Rebase or merge the base branch into the PR, then merge it.")
+            return False
+        if md["action"] == "wait":
+            if (run["merges"] or [{}])[-1].get("reason") != md["reason"]:  # one row per new reason
+                self._merge_row(run, row)
+            return False
+        try:
+            self.tr.merge_pr(run["pr"], c["merge"]["method"], ci["sha"])
+        except RuntimeError as e:
+            self._merge_row(run, {**row, "action": "error", "reason": str(e)[:300]})
+            return False
+        self._merge_row(run, {**row, "action": "merged", "reason": f"{c['merge']['method']}: {md['reason']}"})
+        return True
+
+    def _merge_row(self, run, row):
+        run.set(merges=((run["merges"] or []) + [row])[-POLLS_KEPT:])
+        log(f"{run['key']}: auto-merge: {row['action']} ({row['reason']})")
 
     def follow_up(self):
         """One address() pass per run whose PR is open; needs_human runs wait for you. An error on one PR
-        is recorded and logged, and the others are still polled."""
+        is recorded and logged, and the others are still polled. True when a PR was merged (merge.policy auto)."""
+        merged = False
         for r in all_runs(self.cfg):
             if r["status"] in FOLLOWING:
-                self._address_safely(r)
+                merged = self._address_safely(r) == "merged" or merged
+        return merged
 
     def _address_safely(self, r):
         """address() under the ticket lock, with an error recorded as a poll row; one inside a fix makes the run
@@ -754,8 +787,7 @@ class Loop:
 
     def _address_unlocked(self, r):
         try:
-            self.address(r)
-            return True
+            return "merged" if self.address(r) else True
         except (RuntimeError, llm.LLMError) as e:
             err = str(e)[:500]
             self._poll(r, error=err)
@@ -780,7 +812,10 @@ class Loop:
             r.set(status="pr_open", ci_rounds=0, comment_rounds=0, overrides=(r["overrides"] or []) + [over],
                   handled_ci=(r["handled_ci"] or [])[:-1])  # the last failure may be retried
             log(f"{r['key']}: needs_human overridden by you: round limits reset for this pass")
-        return 0 if self._address_safely(r) else 2
+        res = self._address_safely(r)
+        if res == "merged":
+            self.reconcile()
+        return 0 if res else 2
 
     def _needs_human(self, run, reason, details=""):
         """Stop following this PR: label the issue, say why on the PR, status needs_human (polls skip it)."""
@@ -900,13 +935,16 @@ class Loop:
             pending = self.waiting()
             if not ticket and len(pending) >= self.cfg["merge"]["max_open_prs"] and not dry:
                 names = ", ".join(f"{r['key']} {r['pr']}" for r in pending)
+                auto = self.cfg["merge"]["policy"] == "auto"
                 if not wait:
-                    log(f"paused: waiting for you to merge {names}. Run again after merging (or use --wait).")
+                    log(f"paused: waiting for {'CI to merge' if auto else 'you to merge'} {names}. "
+                        + ("Use --wait to poll and auto-merge (or agent-kit address <n>)." if auto
+                           else "Run again after merging (or use --wait)."))
                     return 0
                 log(f"waiting for merge: {names} (polling every {self.cfg['merge']['poll_seconds']}s, "
-                    "LLM only for new comments or failed CI)")
-                self.follow_up()
-                time.sleep(self.cfg["merge"]["poll_seconds"])
+                    "LLM only for new comments or failed CI" + ("; auto-merge when green)" if auto else ")"))
+                if not self.follow_up():  # merged: reconcile and go on without the sleep
+                    time.sleep(self.cfg["merge"]["poll_seconds"])
                 continue
             if max_tickets is not None and done >= max_tickets:
                 return 0

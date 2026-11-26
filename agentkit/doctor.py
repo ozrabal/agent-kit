@@ -154,6 +154,15 @@ def check_loop_modes(ctx):
         res.append(warning("parallel", f"loop.parallel {par} > merge.max_open_prs {most}: at most {most} run at once"))
     else:
         res.append(result("parallel", True))
+    mg = ctx.cfg["merge"]
+    if mg["policy"] not in ("pause", "auto") or mg["method"] not in ("merge", "squash", "rebase"):
+        res.append(result("merge", False, f"merge.policy must be pause or auto (got {mg['policy']!r}), "
+                                          f"merge.method merge, squash or rebase (got {mg['method']!r})"))
+    elif mg["policy"] == "auto" and not mg["require_checks"]:
+        res.append(warning("merge", "merge.policy auto with require_checks false: a PR with no CI checks "
+                                    "(or before they start) is merged on local gates and review only"))
+    else:
+        res.append(result("merge", True))
     return res
 
 

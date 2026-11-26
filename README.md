@@ -37,6 +37,7 @@ agent-kit refine --apply 12    # apply the posted proposal: criteria into the bo
 agent-kit run --dry-run        # show the prompt for the next ticket, change nothing
 agent-kit run                  # do the next unblocked ticket, open a PR, pause for merge
 agent-kit run --wait           # keep going: poll open PRs (comments, CI, merges), then the next ticket
+                               # with merge.policy "auto" the polls also merge a green PR
 agent-kit address 12           # handle new review comments and failed CI on #12's open PR now
 agent-kit retro [--no-llm]     # repeated gate errors, findings, denials across runs -> proposed rules, gotchas
 ```
@@ -121,6 +122,22 @@ does one pass now (also when `merge.max_open_prs` is reached).
 | failed CI on a new head SHA, once nothing is pending: compacted `--log-failed` output into a fix, up to `loop.max_ci_rounds` | LLM, session resumed |
 | gates and gate-fix rounds, commit (`address review` / `fix CI`), push | script (+ LLM for gate fixes) |
 | limits reached, gates still failing (the edits stay uncommitted in the worktree) or a fix that changed nothing: label `needs-human`, PR comment, status `needs_human`; polls skip it | script |
+
+### Auto-merge (`merge.policy: "auto"`, opt-in)
+
+The default policy `"pause"` leaves merging to you. With `"auto"`, a poll (`run --wait`, `agent-kit
+address <n>`) that found nothing new to handle also merges the PR, with no LLM call, when the script's
+`merge_decision` says so: not a draft, CI finished with no failed check, at least one check unless
+`merge.require_checks` is `false` (default `true`, so a PR is not merged before its CI starts), no review
+with `CHANGES_REQUESTED` or `REVIEW_REQUIRED`, and GitHub reports it `MERGEABLE`. It runs
+`gh pr merge --<merge.method> --match-head-commit <sha>` (`method` default `squash`; `merge` and `rebase`
+also work), so a push between the check and the merge makes it fail. Then reconcile labels the issue
+done and `run --wait` goes straight to the next ticket. A merge conflict labels the run `needs-human`; a
+merge GitHub refuses (branch protection, missing approval) is recorded and retried on the next poll.
+Draft PRs from failed runs are never merged. Every decision is in `state.json` (`merges`: `merged`,
+`wait` once per new reason, `error`, `conflict`) and the run log (`auto-merge: ...`); `doctor` checks the
+policy and method and warns when `require_checks` is off. Branch protection with required checks on the
+base branch is still the safety net: `gh pr merge` respects it.
 
 Handled comment ids (`handled_comments`) and CI SHAs (`handled_ci`) live in `state.json`, so a restart
 never handles one twice. `agent-kit address <n>` on a `needs_human` run is your override: it resets
@@ -223,7 +240,7 @@ suggestions) and logs one line. Its LLM call is logged in `.agent/runs/retro-cos
 ## Config (`.agent/config.json`)
 
 Kit defaults live in `agentkit/config.py`; the project file overrides any key. Most useful:
-`gates`, `autofix`, `workspace.setup`, `workspace.env`, `tracker.labels`, `merge.max_open_prs`,
+`gates`, `autofix`, `workspace.setup`, `workspace.env`, `tracker.labels`, `merge.*` (`policy`, `method`, `require_checks`, `max_open_prs`, `poll_seconds`),
 `models`, `budget_usd`, `loop.*` (incl. `loop.refine`, `loop.parallel`), `refine.*`, `retro.*`, `pr.sections`, `implement.allow_bash`, `kb.exclude`, `file_gates`,
 `hooks.*`.
 
