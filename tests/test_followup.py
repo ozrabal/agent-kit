@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agentkit.followup import MARKER, ci_decision, new_comments, status_note  # noqa: E402
+from agentkit.followup import MARKER, ci_decision, merge_decision, new_comments, status_note  # noqa: E402
 from agentkit.config import DEFAULTS  # noqa: E402
 from agentkit.llm import LLMError  # noqa: E402
 from agentkit.loop import Loop, Run  # noqa: E402
@@ -80,6 +80,32 @@ class CiDecision(unittest.TestCase):
         self.assertIn("2 of 2", d["reason"])
 
 
+class MergeDecision(unittest.TestCase):
+    OK = {"isDraft": False, "mergeable": "MERGEABLE", "reviewDecision": "APPROVED"}
+    GREEN = [{"name": "test", "bucket": "pass"}]
+
+    def act(self, pr=None, ci="none", checks=GREEN, require=True):
+        return merge_decision(pr or self.OK, ci, checks, require)["action"]
+
+    def test_green_and_mergeable_merges(self):
+        self.assertEqual(self.act(), "merge")
+        self.assertEqual(self.act({**self.OK, "reviewDecision": None}), "merge")
+
+    def test_waits_for_ci_draft_review_and_unknown_mergeable(self):
+        self.assertEqual(self.act(ci="pending"), "wait")
+        self.assertEqual(self.act(ci="handled"), "wait")
+        self.assertEqual(self.act({**self.OK, "isDraft": True}), "wait")
+        self.assertEqual(self.act({**self.OK, "reviewDecision": "CHANGES_REQUESTED"}), "wait")
+        self.assertEqual(self.act({**self.OK, "mergeable": "UNKNOWN"}), "wait")
+
+    def test_no_checks_waits_unless_not_required(self):
+        self.assertEqual(self.act(checks=[]), "wait")
+        self.assertEqual(self.act(checks=[], require=False), "merge")
+
+    def test_conflict(self):
+        self.assertEqual(self.act({**self.OK, "mergeable": "CONFLICTING"}), "conflict")
+
+
 class StatusNote(unittest.TestCase):
     LIMITS = {"max_ci_rounds": 2, "max_comment_rounds": 2}
 
@@ -132,6 +158,17 @@ class FakeTracker:
 
     def set_status(self, n, old, new):
         self.labels.append((n, old, new))
+
+    merge_info = {"isDraft": False, "mergeable": "MERGEABLE", "reviewDecision": ""}
+    merge_error = None
+
+    def pr_merge_info(self, pr):
+        return self.merge_info
+
+    def merge_pr(self, pr, method, sha):
+        if self.merge_error:
+            raise RuntimeError(self.merge_error)
+        self.posted.append(("merge", method, sha))
 
     def get(self, n):
         return {"number": n, "title": "t", "body": "Make x two.", "labels": [], "state": "OPEN"}
@@ -214,6 +251,57 @@ class Follow(unittest.TestCase):
         self.assertEqual(run["polls"][-1]["ci"], "none")
         self.assertEqual(run["polls"][-1]["note"], "nothing new")
 
+
+    GREEN = {"sha": "abc1234", "checks": [{"name": "test", "bucket": "pass"}], "failed_runs": []}
+
+    def test_pause_policy_never_merges(self):
+        self.tr.checks = self.GREEN
+        self.start()
+        run = self.address()
+        self.assertEqual(self.tr.posted, [])
+        self.assertIsNone(run["merges"])
+
+    def test_auto_policy_merges_green_pr_with_head_sha(self):
+        self.tr.checks = self.GREEN
+        c, _ = self.start()
+        lp = Loop(self.cfg(merge={"policy": "auto"}), claude=self.claude, tracker=self.tr)
+        self.assertTrue(lp.address(Run(c, 7)))
+        self.assertEqual(self.tr.posted, [("merge", "squash", "abc1234")])
+        self.assertEqual(Run(c, 7)["merges"][-1]["action"], "merged")
+        self.assertEqual(self.calls, [])
+
+    def test_auto_policy_waits_once_per_reason_and_retries_after_error(self):
+        self.tr.checks = {**self.GREEN, "checks": [{"name": "test", "bucket": "pending"}]}
+        self.start()
+        cfg = self.cfg(merge={"policy": "auto"})
+        self.address(cfg)
+        run = self.address(cfg)
+        self.assertEqual([m["action"] for m in run["merges"]], ["wait"])
+        self.tr.checks, self.tr.merge_error = self.GREEN, "gh: base branch policy prohibits the merge"
+        run = self.address(cfg)
+        self.assertEqual(run["merges"][-1]["action"], "error")
+        self.assertEqual(run["status"], "pr_open")
+        self.tr.merge_error = None
+        run = self.address(cfg)
+        self.assertEqual(run["merges"][-1]["action"], "merged")
+
+    def test_auto_policy_conflict_needs_a_human(self):
+        self.tr.checks = self.GREEN
+        self.tr.merge_info = {**FakeTracker.merge_info, "mergeable": "CONFLICTING"}
+        self.start()
+        run = self.address(self.cfg(merge={"policy": "auto"}))
+        self.assertEqual(run["status"], "needs_human")
+        self.assertNotIn("merge", [k for k, _, _ in self.tr.posted])
+
+    def test_auto_policy_does_not_merge_on_a_pass_with_new_comments(self):
+        self.tr.checks = self.GREEN
+        self.tr.comments = [c(1, body="why x?")]
+        self.triage((1, "reply", "q", "Because y."))
+        self.start()
+        run = self.address(self.cfg(merge={"policy": "auto"}))
+        self.assertIsNone(run["merges"])
+        run = self.address(self.cfg(merge={"policy": "auto"}))
+        self.assertEqual(run["merges"][-1]["action"], "merged")
 
     def triage(self, *decisions):
         self.answers["triage"] = {"comments": [dict(zip(("id", "action", "reason", "reply_draft"), d)) for d in decisions]}

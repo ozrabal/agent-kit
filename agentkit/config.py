@@ -41,7 +41,9 @@ DEFAULTS = {
             r"\b(cp|mv)\b[^;&|]*\s(~|\$HOME)(/\S*)?\s*($|[;&|])",
         ],
     },
-    "merge": {"policy": "pause", "max_open_prs": 1, "poll_seconds": 120},
+    # policy "pause": a human merges; "auto": a follow-up poll (run --wait, address) merges a PR once CI is green,
+    # nothing is new or pending and no review asks for changes (gh pr merge --<method>; no LLM call)
+    "merge": {"policy": "pause", "method": "squash", "require_checks": True, "max_open_prs": 1, "poll_seconds": 120},
     "loop": {
         # before implement: "off" | "check" (script check, skip failing tickets) | "auto" (+ one lean LLM proposal)
         "refine": "check",

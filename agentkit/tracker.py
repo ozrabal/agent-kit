@@ -145,6 +145,15 @@ class GitHub:
     def edit_pr_body(self, ref, body_file):
         self._gh("pr", "edit", str(ref), "--body-file", str(body_file))
 
+    def pr_merge_info(self, pr):
+        """{isDraft, mergeable: MERGEABLE|CONFLICTING|UNKNOWN, reviewDecision} for merge.policy "auto"."""
+        raw = self._gh("pr", "view", str(pr_number(pr)), "--json", "isDraft,mergeable,reviewDecision").stdout
+        return json.loads(raw)
+
+    def merge_pr(self, pr, method, sha):
+        """Merge now with --merge|--squash|--rebase, only if the head is still sha (a push in between fails it)."""
+        self._gh("pr", "merge", str(pr_number(pr)), f"--{method}", "--match-head-commit", sha)
+
     # --- PR follow-up: review comments and CI --------------------------------
     def _pages(self, endpoint):
         pages = json.loads(self._gh("api", "--paginate", "--slurp", endpoint).stdout or "[]")

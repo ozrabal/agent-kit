@@ -32,6 +32,24 @@ def ci_decision(checks, sha, handled_shas, rounds, max_rounds):
     return {"action": "fix", "reason": f"CI failed on {sha[:7]} ({names})", "failed": failed}
 
 
+def merge_decision(pr, ci_action, checks, require_checks):
+    """merge.policy "auto": {"action": merge|wait|conflict, "reason"} for an open PR on a poll where nothing
+    else happened. pr is {isDraft, mergeable, reviewDecision}; ci_action from ci_decision()."""
+    if pr.get("isDraft"):
+        return {"action": "wait", "reason": "draft PR"}
+    if ci_action != "none":
+        return {"action": "wait", "reason": f"CI {ci_action}"}
+    if not checks and require_checks:
+        return {"action": "wait", "reason": "no CI checks yet (merge.require_checks)"}
+    if pr.get("reviewDecision") in ("CHANGES_REQUESTED", "REVIEW_REQUIRED"):
+        return {"action": "wait", "reason": f"review: {pr['reviewDecision'].lower().replace('_', ' ')}"}
+    if pr.get("mergeable") == "CONFLICTING":
+        return {"action": "conflict", "reason": "merge conflict with the base branch"}
+    if pr.get("mergeable") != "MERGEABLE":
+        return {"action": "wait", "reason": f"mergeable: {(pr.get('mergeable') or 'unknown').lower()}"}
+    return {"action": "merge", "reason": "CI green, nothing new"}
+
+
 def where(x):
     """"todo/store.py:7" for an inline comment, "PR review" or "PR conversation" for the others."""
     if x["kind"] == "inline":
