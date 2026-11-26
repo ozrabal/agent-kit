@@ -154,6 +154,10 @@ def check_loop_modes(ctx):
         res.append(warning("parallel", f"loop.parallel {par} > merge.max_open_prs {most}: at most {most} run at once"))
     else:
         res.append(result("parallel", True))
+    q = lp["questions"]
+    rounds_ok = isinstance(q.get("max_rounds"), int) and not isinstance(q.get("max_rounds"), bool) and q["max_rounds"] >= 1
+    res.append(result("questions", isinstance(q.get("enabled"), bool) and rounds_ok,
+                      f"loop.questions needs enabled true/false and max_rounds >= 1 (got {q!r})"))
     mg = ctx.cfg["merge"]
     if mg["policy"] not in ("pause", "auto") or mg["method"] not in ("merge", "squash", "rebase"):
         res.append(result("merge", False, f"merge.policy must be pause or auto (got {mg['policy']!r}), "

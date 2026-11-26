@@ -1,0 +1,2 @@
+
+- Only when a decision blocks a correct implementation, the ticket, the code and the context pack cannot settle it, and a wrong guess would mean redoing the work: stop and return `questions` (at most 3; each with the `question`, 2-4 `options`, the option you `recommended` and `why`) instead of building on a guess. Stop early: do not implement the parts that depend on the answer. The human answers on the issue and this session continues. In every other case leave `questions` empty and put small choices in `concerns`.

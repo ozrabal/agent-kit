@@ -57,6 +57,7 @@ are local.
 | label `in-progress`, worktree from `origin/<base>`, setup commands | script |
 | context pack from `.knowledge/` (FTS5 search + import graph + past tickets + gotchas) | script |
 | implement | LLM (full Claude Code, scoped tools and Bash allowlist) |
+| blocking questions (`loop.questions`, opt-in): post them on the issue, label `needs-human`, wait; the answer resumes the session | script (+ LLM resume) |
 | autofix (formatters), then gates; failures compacted to the relevant lines | script |
 | fix gate failures, up to `loop.max_fix_rounds` (the last one on `models.escalate`, if set) | LLM, same session resumed |
 | commit | script |
@@ -106,6 +107,33 @@ Shown in the run log (`refine: ...`, `parallel: #a, #b in 2 slot(s); left out: .
 (`REFINE` lines, `locked by pid`, `batch #a, #b`), `agent-kit log <n>` (`## refine`, `## parallel`, `## locks`),
 `agent-kit report` (`rf_chk`, `rf_fail`, `rf_prop`, `rf_usd`, `rf_appl`, `rf_split`, `par` = ran beside
 other tickets, `lk_stale`, `lk_busy`) and `doctor` (`refine` mode, `parallel` vs `merge.max_open_prs` and the workspace mode, the label).
+
+## Blocking questions (`loop.questions`, opt-in)
+
+The implement step runs headless, so by default the agent cannot ask anything: it picks the reading that
+best fits the acceptance criteria and says so under "Concerns" in the PR. With
+`"loop": {"questions": {"enabled": true, "max_rounds": 2}}` the implement prompt also allows it to stop
+and return `questions`, each with the question, 2-4 options, the option it recommends and why. It should
+do this only for a decision that the ticket, the code and the context pack cannot settle, and where a
+wrong guess would mean redoing the work. Then:
+
+- the loop posts the questions as one issue comment (lettered options, the recommendation, a
+  `<!-- agent-kit questions #N round R -->` marker), swaps `in-progress` -> `needs-human` and sets the run's
+  status to `questions`. No PR is opened, the worktree and session are kept, and the loop goes on with the
+  next ticket. A run waiting on questions takes no PR slot;
+- you answer in a comment on the issue (e.g. `1: b, keep the old API`). An answer is any comment after the
+  questions comment by a trusted author (`pr.trusted_associations`), not a bot and not the kit's own;
+- the next `agent-kit run`, every `run --wait` iteration (while a PR slot is free) or `agent-kit run --ticket N`
+  finds it, labels the issue back to `in-progress` and resumes the implement session with the questions and
+  your answer (`prompts/answer.md`, `budget_usd.implement`). If the resume fails, it starts a fresh session
+  with the implement prompt plus the answers. Gates, review and the PR follow as usual. Until the answer is
+  there, `run --ticket N` only says it is still waiting (no LLM call);
+- the agent may ask again up to `max_rounds` question rounds in total. After that the schema has no
+  `questions` and the prompt tells it to decide and say so in `concerns`.
+
+Shown in the run log, `state.json` (`questions`: round, items, answers, times; `question_rounds`),
+`agent-kit status` (`waiting for your answer on issue #N`) and `doctor` (`questions`). Off, the
+implement prompt and schema are unchanged.
 
 ## After the PR is open
 
@@ -230,6 +258,9 @@ suggestions) and logs one line. Its LLM call is logged in `.agent/runs/retro-cos
 - Refine: a ticket that passes the script check costs nothing. One that fails costs one lean call
   (no tools, fixed instructions in the system prompt `prompts/refine-system.md`, ticket + context pack in
   the user message) only with `loop.refine: "auto"` or `agent-kit refine <n>`, and only once per body version.
+- `loop.questions`: off, nothing changes. On, the implement prompt has a few more lines and its schema a
+  `questions` field. A question costs one resumed call with the answers (cached session context), instead of
+  review and fix rounds spent on a wrong guess.
 - `loop.parallel` adds no LLM calls; it runs the same calls for several tickets at the same time.
 - Retro: `--no-llm` and runs where nothing repeats cost nothing. Otherwise one lean call with no tools:
   fixed instructions in the system prompt (`prompts/retro-system.md`), the script's aggregate (capped at
@@ -241,7 +272,7 @@ suggestions) and logs one line. Its LLM call is logged in `.agent/runs/retro-cos
 
 Kit defaults live in `agentkit/config.py`; the project file overrides any key. Most useful:
 `gates`, `autofix`, `workspace.setup`, `workspace.env`, `tracker.labels`, `merge.*` (`policy`, `method`, `require_checks`, `max_open_prs`, `poll_seconds`),
-`models`, `budget_usd`, `loop.*` (incl. `loop.refine`, `loop.parallel`), `refine.*`, `retro.*`, `pr.sections`, `implement.allow_bash`, `kb.exclude`, `file_gates`,
+`models`, `budget_usd`, `loop.*` (incl. `loop.refine`, `loop.parallel`, `loop.questions`), `refine.*`, `retro.*`, `pr.sections`, `implement.allow_bash`, `kb.exclude`, `file_gates`,
 `hooks.*`.
 
 Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
