@@ -128,23 +128,11 @@ def _denials(run_dir, calls, rows, roots):
     return found
 
 
-def _since_state(state, since):
-    """state with its recorded lists (gate_failures, reviews, tdd_checks) and crash failure cut to entries
-    at or after since; entries without ts (recorded before ts was) count as older. Unchanged for None."""
-    if since is None:
-        return state
-    cut = {k: report.newer(state.get(k) or [], since) for k in ("gate_failures", "reviews", "tdd_checks")}
-    failure = state.get("failure")
-    if failure and (failure.get("ts") or 0) < since:
-        failure = None
-    return {**state, **cut, "failure": failure}
-
-
 def run_facts(run_dir, state, calls, hook_rows, n_lines=3, since=None):
     """What one ticket run teaches: gate error lines, review findings and denials (normalized), cost per
     step kind, failed red/green checks. calls: its cost.jsonl rows; hook_rows: all hooks.jsonl rows;
-    since: only state entries recorded at or after it (see _since_state)."""
-    run_dir, state = Path(run_dir), _since_state(state, since)
+    since: only state entries recorded at or after it (see report.since_state)."""
+    run_dir, state = Path(run_dir), report.since_state(state, since)
     # its worktree, and the repo (<repo>/.agent/runs/<n>), as written and with symlinks resolved
     roots = [state.get("ws"), run_dir.absolute().parents[2], run_dir.resolve().parents[2]]
     rows = hook_log.rows_for(hook_rows, state)

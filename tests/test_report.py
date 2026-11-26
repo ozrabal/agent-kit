@@ -57,6 +57,46 @@ class Report(unittest.TestCase):
         self.assertEqual(rep["rows"][0]["key"], "#2")
         self.assertEqual(rep["rows"][0]["gates"], "-")
 
+    def test_since_ignores_escalations_and_review_tiers_recorded_before_it(self):
+        state = {"status": "pr_open",
+                 "escalations": [{"ts": 50, "step": "fix-review:1", "model": "opus"}, {"step": "fix-gates:2"}],
+                 "reviews": [{"ts": 50, "pass": False, "plan": {"tier": "full"}},
+                             {"ts": 60, "skipped": "docs only", "pass": True, "plan": {"tier": "skip"}},
+                             {"pass": True, "plan": {"tier": "light"}}]}  # no ts: recorded before ts was
+        make_run(self.runs, 7, state, [call("implement", 1.0, ts=40), call("review", 0.5, ts=50),
+                                       call("triage", 0.01, ts=200)])  # a later `agent-kit address`
+        keys = ("escalated", "review_skipped", "review_light", "review_full", "review_rounds")
+        [row] = report.collect(self.runs, since=100)["rows"]
+        self.assertEqual({k: row[k] for k in keys}, dict.fromkeys(keys, 0))
+        [row] = report.collect(self.runs)["rows"]
+        self.assertEqual({k: row[k] for k in keys}, {"escalated": 2, "review_skipped": 1, "review_light": 1,
+                                                    "review_full": 1, "review_rounds": 1})
+        [row] = report.collect(self.runs, since=60)["rows"]
+        self.assertEqual({k: row[k] for k in keys}, {"escalated": 0, "review_skipped": 1, "review_light": 0,
+                                                    "review_full": 0, "review_rounds": 0})
+
+    def test_since_ignores_follow_up_refine_and_parallel_entries_recorded_before_it(self):
+        state = {"status": "pr_open", "poll_count": 61, "polls": [{"ts": 50}, {"ts": 150}, {"ts": 160}],
+                 "triage": [{"ts": 50, "id": 1, "action": "fix"}, {"id": 2, "action": "reply"},
+                            {"ts": 150, "id": 3, "action": "ignore"}],
+                 "needs_human": {"ts": 50, "reason": "CI rounds used: 2 of 2"},
+                 "refine_checks": 3, "refine": {"ts": 50, "ok": False, "proposed": True},
+                 "refine_apply": {"ts": 60, "done": True, "created": [11, 12]},
+                 "parallel": {"ts": 40, "batch": [7, 8], "slots": 2},
+                 "locks": [{"ts": 40, "event": "stale"}, {"ts": 150, "event": "busy"}, {"event": "busy"}]}
+        make_run(self.runs, 7, state, [call("implement", 1.0, ts=40), call("triage", 0.01, ts=150)])
+        keys = ("polls", "triaged", "needs_human", "refine_checks", "refine_failed", "refine_proposed",
+                "refine_applied", "split_created", "parallel", "lock_stale", "lock_busy")
+        [row] = report.collect(self.runs)["rows"]
+        self.assertEqual({k: row[k] for k in keys}, {"polls": 61, "triaged": 3, "needs_human": 1, "refine_checks": 3,
+                                                    "refine_failed": 1, "refine_proposed": 1, "refine_applied": 1,
+                                                    "split_created": 2, "parallel": 1, "lock_stale": 1, "lock_busy": 2})
+        [row] = report.collect(self.runs, since=100)["rows"]
+        self.assertEqual({k: row[k] for k in keys},
+                         {**dict.fromkeys(keys, 0), "polls": 2, "triaged": 1, "lock_busy": 1})
+        [row] = report.collect(self.runs, since=50)["rows"]  # only the last refine check is stored: it counts as 1
+        self.assertEqual((row["refine_checks"], row["refine_failed"], row["needs_human"]), (1, 1, 1))
+
     def test_follow_up_counts(self):
         state = {"status": "needs_human", "poll_count": 61, "polls": [{"ts": 1}],
                  "triage": [{"id": 1, "action": "fix"}, {"id": 2, "action": "reply"}, {"id": 3, "action": "ignore"}],

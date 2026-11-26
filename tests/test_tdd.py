@@ -239,8 +239,10 @@ class Rounds(unittest.TestCase):
         self.assertEqual(first["findings"][0]["issue"][:34], "tests pass without the change (gat")
         self.assertEqual(run["tdd"]["status"], "red")
         self.assertEqual([t["status"] for t in run["tdd_checks"]], ["passes_on_base", "red"])
-        self.assertEqual(run["escalations"], [{"step": "fix-review:1", "round": 1, "model": "opus",
-                                               "reason": "last review-fix round (1 of 1)"}])
+        [esc] = run["escalations"]
+        self.assertIsInstance(esc.pop("ts"), int)  # report --since counts only newer ones
+        self.assertEqual(esc, {"step": "fix-review:1", "round": 1, "model": "opus",
+                               "reason": "last review-fix round (1 of 1)"})
 
     def test_gate_fix_escalates_only_on_the_last_round(self):
         self.write({"app.py": NEW, "tests/test_app.py": PROVES.replace("2)", "30)")})

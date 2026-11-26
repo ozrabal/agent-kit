@@ -584,7 +584,8 @@ class Loop:
         """A resumed fix round; the last allowed one (rnd == last) may use models.escalate."""
         model = fix_model(self.cfg, rnd, last)
         if model != self.cfg["models"]["implement"]:
-            esc = {"step": step, "round": rnd, "model": model, "reason": f"last {kind} round ({rnd} of {last})"}
+            esc = _stamped({"step": step, "round": rnd, "model": model,
+                            "reason": f"last {kind} round ({rnd} of {last})"})
             run.set(escalations=(run["escalations"] or []) + [esc])
             log(f"escalate: {step} uses {model} ({esc['reason']})")
         self._impl(run, ws, text, step, resume=run["session"], model=model)
@@ -977,7 +978,7 @@ class Loop:
 
 
 def _stamped(entry):
-    """entry with the time it was recorded: `agent-kit retro --since` counts only newer state entries."""
+    """entry with the time it was recorded: `report --since` and `retro --since` count only newer state entries."""
     return {**entry, "ts": int(time.time())}
 
 
