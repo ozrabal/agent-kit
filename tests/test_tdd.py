@@ -252,6 +252,16 @@ class Rounds(unittest.TestCase):
         self.assertEqual([r["model"] for r in rows], ["sonnet", "opus"])
         self.assertIsNone(run["tdd"])
 
+    def test_each_failing_gate_report_is_kept_for_retro(self):
+        self.write({"app.py": NEW, "tests/test_app.py": PROVES.replace("2)", "30)")})
+        self.actions["fix-gates:2"] = {"tests/test_app.py": PROVES}
+        failure, run = self.rounds(fix=2, tdd_on=False)
+        self.assertIsNone(failure)
+        self.assertEqual([(g["round"], [r["name"] for r in g["results"]]) for g in run["gate_failures"]],
+                         [(0, ["test"]), (1, ["test"])])
+        self.assertIn("AssertionError: 2 != 30", run["gate_failures"][0]["results"][0]["output"])
+        self.assertTrue(run["gates"]["ok"])
+
     def test_no_escalate_keeps_implement_model(self):
         self.write({"app.py": NEW, "tests/test_app.py": WEAK})
         self.actions["fix-review:1"] = {"tests/test_app.py": PROVES}

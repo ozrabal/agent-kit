@@ -1,0 +1,101 @@
+{
+ "number": 170,
+ "key": "#170",
+ "title": "Reject duplicate task titles",
+ "refine": {
+  "ts": 1795610874,
+  "mode": "check",
+  "ok": true,
+  "reasons": [],
+  "criteria": 2,
+  "body_hash": "a5d5cf85c950",
+  "proposed": false
+ },
+ "refine_checks": 1,
+ "branch": "170-reject-duplicate-task-titles",
+ "ws": "/home/dev/.agent-wt/agent-kit-sandbox/170-reject-duplicate-task-titles",
+ "status": "pr_open",
+ "parallel": {
+  "ts": 1795610874,
+  "batch": [
+   167,
+   170
+  ],
+  "slots": 2,
+  "left": [
+   {
+    "number": 168,
+    "why": "waits on #167"
+   },
+   {
+    "number": 169,
+    "why": "waits on #168"
+   },
+   {
+    "number": 171,
+    "why": "no free slot (2 of 2 used)"
+   }
+  ],
+  "pid": 35497,
+  "exit": 0,
+  "secs": 29.1
+ },
+ "locks": [
+  {
+   "ts": 1795610877,
+   "event": "taken",
+   "pid": 35497
+  },
+  {
+   "ts": 1795610905,
+   "event": "released",
+   "pid": 35497
+  }
+ ],
+ "session": "87f7e761-51ba-4df5-8c97-def622aa2847",
+ "sessions": [
+  {
+   "step": "implement",
+   "id": "87f7e761-51ba-4df5-8c97-def622aa2847"
+  }
+ ],
+ "fix_rounds": 0,
+ "gates": {
+  "ok": true,
+  "results": [
+   {
+    "name": "test",
+    "ok": true,
+    "secs": 0.0
+   }
+  ]
+ },
+ "reviews": [
+  {
+   "criteria": [
+    {
+     "criterion": "CLI prints an error and exits 1 on a duplicate",
+     "met": true,
+     "evidence": "cli.py catches ValueError, prints to stderr, returns 1; test_cli_duplicate_exits_1 covers it"
+    },
+    {
+     "criterion": "Existing tests updated to match the new rule",
+     "met": true,
+     "evidence": "test_add_twice_keeps_both replaced with duplicate-rejected and done-allowed tests"
+    }
+   ],
+   "findings": [],
+   "lessons": [],
+   "pass": true,
+   "plan": {
+    "run": true,
+    "model": "sonnet",
+    "reason": "32 changed lines, ordinary paths",
+    "tier": "light"
+   }
+  }
+ ],
+ "tdd": null,
+ "tdd_checks": [],
+ "failure": null
+}

@@ -20,7 +20,7 @@ import sqlite3
 from pathlib import Path
 
 from . import llm
-from .util import clip, log, out
+from .util import clip, log, one_line, out
 
 LANG = {
     ".ts": "js", ".tsx": "js", ".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js",
@@ -105,6 +105,11 @@ def _front_value(v):
             return [str(x) for x in json.loads(v)]
         except json.JSONDecodeError:
             return [x.strip().strip("'\"") for x in v.strip("[]").split(",") if x.strip()]
+    if len(v) > 1 and v[0] == v[-1] == '"':  # a JSON string (retro writes summaries this way): exact text
+        try:
+            return str(json.loads(v))
+        except json.JSONDecodeError:
+            pass
     return v.strip("'\"")
 
 
@@ -130,11 +135,26 @@ def parse_rule(text, name):
             "summary": meta.get("summary") or first, "text": body}
 
 
+def _zero_folders(glob):
+    """The glob plus its variants where a `**/` (leading) or `/**/` (inside) matches no folder at all."""
+    seen, todo = set(), [glob]
+    while todo:
+        g = todo.pop()
+        if g in seen:
+            continue
+        seen.add(g)
+        if g.startswith("**/"):
+            todo.append(g[3:])
+        todo += [g[:i] + g[i + 3:] for i in range(len(g)) if g.startswith("/**/", i)]
+    return seen
+
+
 def matches(path, globs):
-    """fnmatch on a repo-relative path; `*` and `**` cross folders, and `**/x` also matches `x`. No globs = all."""
+    """fnmatch on a repo-relative path; `*` and `**` cross folders, and `**/` (leading or inside) also
+    matches no folder: `**/x` matches `x`, `src/**/*.py` matches `src/a.py`. No globs = all."""
     if not globs:
         return True
-    return any(fnmatch.fnmatch(path, g) or (g.startswith("**/") and fnmatch.fnmatch(path, g[3:])) for g in globs)
+    return any(fnmatch.fnmatch(path, v) for g in globs for v in _zero_folders(g))
 
 
 def docs_only(changed, skip_paths):
@@ -645,6 +665,11 @@ def write_ticket(cfg, cwd, key, title, number, summary, files_stat, lessons, pr=
     (d / "tickets" / f"{safe}.md").write_text("\n".join(body) + "\n")
 
 
+def similar(a, b):
+    """Near-duplicate text: the check add_lessons and retro use before adding a lesson or a rule."""
+    return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio() > 0.8
+
+
 def add_lessons(cfg, cwd, items):
     """items: [(kind, text, key)], kind in gotchas|conventions. Skips near-duplicates."""
     d = kdir(cfg, cwd)
@@ -653,9 +678,9 @@ def add_lessons(cfg, cwd, items):
     for kind, text, key in items:
         f = d / f"{'conventions' if kind.startswith('conv') else 'gotchas'}.md"
         cur = f.read_text()
-        existing = [l[2:].lower() for l in cur.splitlines() if l.startswith("- ")]
-        t = re.sub(r"\s+", " ", text).strip().rstrip(".")
-        if not t or any(difflib.SequenceMatcher(None, t.lower(), e).ratio() > 0.8 for e in existing):
+        existing = [l[2:] for l in cur.splitlines() if l.startswith("- ")]
+        t = one_line(text).rstrip(".")
+        if not t or any(similar(t, e) for e in existing):
             continue
         f.write_text(cur.rstrip("\n") + f"\n- {t} ({key})\n")
         added += 1

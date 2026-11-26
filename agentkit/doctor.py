@@ -5,9 +5,9 @@ import json
 import sys
 import time
 
-from . import hooks, kb, tdd
-from .config import DEFAULTS, config_path
-from .util import read_json, sh
+from . import hooks, kb, retro, tdd
+from .config import DEFAULTS, RETRO_LOG, config_path, runs_dir, unknown_keys
+from .util import read_json, read_jsonl, sh
 
 TOOLS = {
     "git": "install git",
@@ -42,19 +42,6 @@ def check_python(ctx):
 
 def check_gh_auth(ctx):
     return [result("gh auth", _succeeds(ctx.run, ["gh", "auth", "status"]), "run `gh auth login`")]
-
-
-def unknown_keys(user, defaults, prefix=""):
-    """Dotted paths of keys in user that DEFAULTS does not know. An empty dict in DEFAULTS
-    (like workspace.env) is a free-form map, so its keys are not checked."""
-    found = []
-    for k, v in user.items():
-        path = prefix + k
-        if k not in defaults:
-            found.append(path)
-        elif isinstance(v, dict) and isinstance(defaults[k], dict) and defaults[k]:
-            found += unknown_keys(v, defaults[k], path + ".")
-    return found
 
 
 def check_config(ctx):
@@ -170,9 +157,22 @@ def check_loop_modes(ctx):
     return res
 
 
+def check_retro(ctx):
+    """Repeated gate errors, findings or denials in the runs since the last retro that asked the LLM
+    (or found nothing to learn): a sign the same mistakes cost tokens again."""
+    done = [x for x in read_jsonl(runs_dir(ctx.cfg) / RETRO_LOG) if x.get("mode") in ("llm", "nothing")]
+    since = done[-1].get("ts") if done else None
+    agg = retro.scan(ctx.cfg, since)
+    if not retro.repeated(agg):
+        return [result("retro", True)]
+    return [warning("retro", f"in {agg['runs']} runs {'since the last retro' if since else 'and no retro yet'}: "
+                             f"{len(agg['errors'])} repeated gate errors, {len(agg['findings'])} review findings, "
+                             f"{len(retro.repeated_denials(agg))} denied tools: run `agent-kit retro`")]
+
+
 CHECKS = [check_tools, check_python, check_gh_auth, check_config, check_labels, check_base_branch,
           check_gates, check_tdd, check_loop_modes, check_knowledge_base, check_hooks,
-          check_hook_errors, check_guard]
+          check_hook_errors, check_guard, check_retro]
 
 
 class Ctx:

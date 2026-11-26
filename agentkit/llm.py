@@ -197,10 +197,13 @@ def step_kind(row):
 
 
 def cost_summary(path):
-    if not Path(path).exists():
-        return None
+    return cost_by_step(read_jsonl(path)) if Path(path).exists() else None
+
+
+def cost_by_step(rows):
+    """Cost rows -> {step kind: {calls, usd, secs}}."""
     by = {}
-    for r in read_jsonl(path):
+    for r in rows:
         s = by.setdefault(step_kind(r), {"calls": 0, "usd": 0.0, "secs": 0.0})
         s["calls"] += 1
         s["usd"] += r.get("usd") or 0

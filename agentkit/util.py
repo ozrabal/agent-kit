@@ -112,6 +112,22 @@ def compact(text, max_lines=60, tail=15):
     return "\n".join(picked)
 
 
+def error_lines(text, n):
+    """The first n lines that explain a failure (compact's error pattern), else the last n lines."""
+    lines = [_ANSI.sub("", l).strip()[:300] for l in (text or "").splitlines()]
+    lines = [l for l in lines if l]
+    return ([l for l in lines if _ERR.search(l)][:n] or lines[-n:]) if lines else []
+
+
+def plural(n, word):
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def one_line(text):
+    """Whitespace runs (newlines too) collapsed to one space, trimmed."""
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
 def clip(text, n):
     text = text or ""
     return text if len(text) <= n else text[:n] + f"\n...[truncated {len(text) - n} chars]"

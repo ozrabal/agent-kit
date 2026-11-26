@@ -38,6 +38,7 @@ agent-kit run --dry-run        # show the prompt for the next ticket, change not
 agent-kit run                  # do the next unblocked ticket, open a PR, pause for merge
 agent-kit run --wait           # keep going: poll open PRs (comments, CI, merges), then the next ticket
 agent-kit address 12           # handle new review comments and failed CI on #12's open PR now
+agent-kit retro [--no-llm]     # repeated gate errors, findings, denials across runs -> proposed rules, gotchas
 ```
 
 Commit `.agent/config.json`, `.knowledge/` and `.claude/settings.json` (the loop's worktrees only
@@ -128,6 +129,43 @@ the round limits and lets the last CI failure be retried. A fix interrupted mid-
 (`polls`, `triage`, `follow_ups`, `needs_human`), the run log, `agent-kit log <n>` (`## follow-up`),
 `agent-kit status` and `agent-kit report` (`polls`, `triaged`, `tr_usd`, `cm_fix`, `ci_fix`, `human`).
 
+## Retro: learn from past runs
+
+`agent-kit retro [--since <ts>] [--no-llm]` reads the runs in `.agent/runs/` (the same runs as
+`agent-kit report --since`: a run counts when it has an LLM call at or after the timestamp) and prints:
+
+- totals: cost, fix and review rounds, escalations, failed red/green checks, hook blocks, PR follow-up;
+- the most expensive LLM steps;
+- gate errors and review findings seen in at least `retro.min_runs` (default 2) different runs. Gate
+  errors are the first `retro.error_lines` (default 3) error lines of each failing gate: every failing
+  round the loop recorded (`gate_failures` in `state.json`; older runs: the final `gates`), a crashed
+  run's error, and the post-edit and stop hook blocks. Lines are normalized before they are compared
+  (worktree and repo folders stripped, temp dirs, hex ids and numbers replaced; quoted values kept,
+  an apostrophe is not a quote).
+  Findings (TDD ones included) are grouped by their normalized text;
+- the files and folders findings point at, and denied tool calls: permission denials from the session
+  logs, every session in a log (a Bash one is a candidate for `implement.allow_bash`), one without
+  details for each further denial `cost.jsonl` counts (lean calls have no log), and scope guard blocks.
+
+Then, unless `--no-llm` or nothing repeats, one lean LLM call (`models.retro`, default `sonnet`,
+`budget_usd.retro` 0.5, no tools) gets that report (at most `retro.max_chars`, default 12000) and the
+rules and gotchas the project already has (at most `retro.known_chars`, default 3000), and proposes rules, gotchas and config
+changes. Retro refuses before the call when tracked files under `.knowledge/` have uncommitted changes,
+so the proposal is the only diff. The proposal is never committed:
+
+- rules go to `.knowledge/rules/retro-<summary>.md` (the rules format, so `kb update` and `kb context`
+  pick them up; the digest is refreshed). A rule whose file exists, or that matches an existing rule's
+  summary and paths, is skipped; nothing is overwritten;
+- gotchas are appended to `gotchas.md` (`(retro)`), with the near-duplicate check lessons use;
+- config suggestions are only printed, with unknown keys marked;
+- `git diff --stat` and the untracked files retro wrote are printed: review, then commit.
+
+Every retro appends a row to `.agent/runs/retro.jsonl` (mode `no-llm`, `nothing`, `refused`, `error` or
+`llm`; runs, repeated errors/findings/denials, cost, rules written and skipped, gotchas added, config
+suggestions) and logs one line. Its LLM call is logged in `.agent/runs/retro-cost.jsonl`.
+`agent-kit report` ends with a `retro:` line (count, cost, proposals, last run), and `doctor` warns
+(`retro`) when something repeats in the runs since the last retro that asked the LLM.
+
 ## Token use
 
 - Agents get a prepared context pack (~2-4k tokens) instead of exploring.
@@ -144,7 +182,8 @@ the round limits and lets the last CI failure be retried. A fix interrupted mid-
 - Hooks catch lint and gate failures inside the implement session, so fewer resumed fix rounds
   with a new prompt are needed.
 - Path-scoped rules (`.knowledge/rules/*.md`, frontmatter `paths: ["src/api/**"]` and `summary:`;
-  no `paths` = everywhere; globs use `fnmatch` on repo-relative paths, so `*` also crosses folders) replace pasting everything everywhere: the context pack has the full
+  no `paths` = everywhere; globs use `fnmatch` on repo-relative paths, so `*` also crosses folders, and a
+  `**/` matches no folder too: `src/**/*.py` matches `src/a.py`) replace pasting everything everywhere: the context pack has the full
   text of the rules for the files it picked, the review prompt has `conventions.md` plus the rules
   for the changed files, and other sessions get a one-line-per-rule digest
   (`.knowledge/rules-digest.md`, written by `kb update`).
@@ -168,6 +207,9 @@ the round limits and lets the last CI failure be retried. A fix interrupted mid-
   (no tools, fixed instructions in the system prompt `prompts/refine-system.md`, ticket + context pack in
   the user message) only with `loop.refine: "auto"` or `agent-kit refine <n>`, and only once per body version.
 - `loop.parallel` adds no LLM calls; it runs the same calls for several tickets at the same time.
+- Retro: `--no-llm` and runs where nothing repeats cost nothing. Otherwise one lean call with no tools:
+  fixed instructions in the system prompt (`prompts/retro-system.md`), the script's aggregate (capped at
+  `retro.max_chars`) and the known rules/gotchas (capped) in the user message; never full logs.
 - Implement, fix and review stream their sessions to `.agent/runs/<n>/<step>.log` and print each
   tool call while they run. Same tokens as before; only the output format changes.
 
@@ -175,7 +217,7 @@ the round limits and lets the last CI failure be retried. A fix interrupted mid-
 
 Kit defaults live in `agentkit/config.py`; the project file overrides any key. Most useful:
 `gates`, `autofix`, `workspace.setup`, `workspace.env`, `tracker.labels`, `merge.max_open_prs`,
-`models`, `budget_usd`, `loop.*` (incl. `loop.refine`, `loop.parallel`), `refine.*`, `pr.sections`, `implement.allow_bash`, `kb.exclude`, `file_gates`,
+`models`, `budget_usd`, `loop.*` (incl. `loop.refine`, `loop.parallel`), `refine.*`, `retro.*`, `pr.sections`, `implement.allow_bash`, `kb.exclude`, `file_gates`,
 `hooks.*`.
 
 Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
@@ -212,7 +254,7 @@ Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
   "*.txt"]`), `skip_under_lines` (default `0` = never skip by size), `risky_paths` (default `[]`,
   e.g. `["**/auth/**", "**/migrations/**"]`), `light_max_lines` (default `300`). Models:
   `models.review` (default `opus`) and `models.review_light` (default `sonnet`); both use
-  `budget_usd.review`. Globs as for rules: `*` crosses folders, `**/x` also matches `x`.
+  `budget_usd.review`. Globs as for rules: `*` crosses folders, `**/x` also matches `x`, `a/**/b` also matches `a/b`.
 - `loop.tdd` (opt-in, `enabled: false`): after the gates pass, the test files the branch added or
   changed (matching `test_paths`, default `["tests/**", "**/*_test.*", "**/test_*.*", "**/*.test.*",
   "**/*.spec.*"]`) are copied into a temporary worktree at `origin/<base>` (system temp dir,
@@ -241,6 +283,11 @@ Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
   GitHub author associations are triaged, so a stranger's comment on a public repo cannot steer the agent.
   `tracker.labels.needs_human` (default `needs-human`): set when the follow-up gives up (doctor
   checks that the label exists).
+- `retro` (for `agent-kit retro`): `min_runs` (default 2, different runs a gate error, finding or
+  denial must appear in to count as repeated), `error_lines` (default 3 per failing gate), `top`
+  (default 10 items per report section), `max_chars` (default 12000, the report sent to the LLM),
+  `known_chars` (default 3000, the known rules and gotchas sent along).
+  `models.retro` (default `sonnet`), `effort.retro` (default `null`), `budget_usd.retro` (default 0.5).
 - Hooks do nothing in repos without `.agent/config.json`. Gates in hooks cost no tokens; Claude
   reads the compacted failure output in its session.
 

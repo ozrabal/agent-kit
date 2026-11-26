@@ -1,11 +1,13 @@
 """Per-ticket cost, tokens and rounds from .agent/runs/<n>/ (state.json + cost.jsonl). No LLM.
 Used by `agent-kit report` and the sandbox benchmark to compare runs."""
+import time
 from pathlib import Path
 
 from . import hooks as hook_log
 from .followup import poll_text
 from .llm import step_kind
-from .util import read_json, read_jsonl
+from .config import RETRO_LOG
+from .util import plural, read_json, read_jsonl
 
 TOKENS = ("in", "cache_r", "out")
 HOOKS = ("hook_calls", "edit_blocks", "stop_blocks", "guard_blocks", "hook_errors")
@@ -66,15 +68,20 @@ def parallel_counts(state):
             "lock_busy": events.count("busy")}
 
 
+def newer(rows, since):
+    """Rows (cost, hook log) at or after since (unix ts); all of them when since is None."""
+    return [r for r in rows if since is None or (r.get("ts") or 0) >= since]
+
+
 def collect(runs_dir, since=None):
     """{"rows": [one per ticket run], "total": sums}. since: unix ts; older calls are ignored
     and runs with no newer calls are left out."""
     rows = []
     runs_dir = Path(runs_dir)
-    hook_rows = [h for h in read_jsonl(runs_dir / hook_log.LOG_NAME) if since is None or (h.get("ts") or 0) >= since]
+    hook_rows = newer(read_jsonl(runs_dir / hook_log.LOG_NAME), since)
     dirs = runs_dir.iterdir() if runs_dir.is_dir() else []
     for d in sorted((p for p in dirs if p.is_dir() and p.name.isdigit()), key=lambda p: int(p.name)):
-        calls = [c for c in read_jsonl(d / "cost.jsonl") if since is None or (c.get("ts") or 0) >= since]
+        calls = newer(read_jsonl(d / "cost.jsonl"), since)
         if since is not None and not calls:
             continue
         state = read_json(d / "state.json", {}) or {}
@@ -105,6 +112,19 @@ COLUMNS = [("ticket", "key"), ("status", "status"), ("usd", "usd"), ("calls", "c
            ("rf_prop", "refine_proposed"), ("rf_usd", "refine_usd"), ("rf_appl", "refine_applied"), ("rf_split", "split_created"),
            ("par", "parallel"), ("lk_stale", "lock_stale"), ("lk_busy", "lock_busy"), ("gates", "gates"), ("tdd", "tdd"),
            ("hooks", "hook_calls"), ("edit_blk", "edit_blocks"), ("stop_blk", "stop_blocks"), ("guard_blk", "guard_blocks"), ("hook_err", "hook_errors"), *((t, t) for t in TOKENS)]
+
+
+def retro_line(runs_dir):
+    """`agent-kit report` footer from .agent/runs/retro.jsonl (one row per `agent-kit retro`); "" before the first."""
+    rows = read_jsonl(Path(runs_dir) / RETRO_LOG)
+    if not rows:
+        return ""
+    last = rows[-1]
+    when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(last.get("ts") or 0))
+    return (f"retro: {plural(len(rows), 'run')}, LLM ${sum(r.get('usd') or 0 for r in rows):.2f}, "
+            f"{sum(len(r.get('rules') or []) for r in rows)} rules and {sum(r.get('gotchas') or 0 for r in rows)} "
+            f"gotchas proposed; last {when} ({last.get('mode')}: {len(last.get('rules') or [])} rules, "
+            f"{last.get('gotchas') or 0} gotchas, {last.get('config') or 0} config)")
 
 
 def run_lines(state):

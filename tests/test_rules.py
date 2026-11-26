@@ -66,7 +66,9 @@ class Matches(unittest.TestCase):
     def test_globs(self):
         cases = [("src/**", "src/a.py", True), ("src/**", "src/api/deep/x.py", True), ("src/**", "web/a.py", False),
                  ("*.sql", "db/m/1.sql", True), ("**/conftest.py", "conftest.py", True),
-                 ("**/conftest.py", "tests/conftest.py", True), ("src/api/**", "src/apix/a.py", False)]
+                 ("**/conftest.py", "tests/conftest.py", True), ("src/api/**", "src/apix/a.py", False),
+                 ("todo/**/*.py", "todo/store.py", True), ("todo/**/*.py", "todo/sub/x.py", True),
+                 ("todo/**/*.py", "todox/store.py", False), ("a/**/b/**/c.py", "a/b/c.py", True)]
         for glob, path, want in cases:
             self.assertEqual(kb.matches(path, [glob]), want, (glob, path))
 

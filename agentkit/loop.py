@@ -610,6 +610,7 @@ class Loop:
         c = self.cfg
         rep = self._gates(ws)
         fix_round = 0
+        _keep_gate_failure(run, rep, fix_round)
         while not rep["ok"] and fix_round < c["loop"]["max_fix_rounds"]:
             fix_round += 1
             run.set(fix_rounds=(run["fix_rounds"] or 0) + 1)
@@ -617,6 +618,7 @@ class Loop:
             self._fix(run, ws, prompt("fix", key=key, reason="These gates fail:", details=details),
                       f"fix-gates:{fix_round}", fix_round, c["loop"]["max_fix_rounds"], "gate-fix")
             rep = self._gates(ws)
+            _keep_gate_failure(run, rep, fix_round)
         run.set(gates=rep)
         return rep
 
@@ -973,6 +975,13 @@ class Loop:
             run.set(parallel={**run["parallel"], **r})
             log(f"parallel: #{num} exited {r['exit']} after {r['secs']}s (status {run['status']})")
         return max(parallel.worst(res), 2 if failed else 0), len(sel["picked"])
+
+
+def _keep_gate_failure(run, rep, rnd):
+    """Every failing gate report goes to state gate_failures for `agent-kit retro`: state gates keeps only the last."""
+    if not rep["ok"]:
+        failed = [r for r in rep["results"] if not r["ok"]]
+        run.set(gate_failures=(run["gate_failures"] or []) + [{"round": rnd, "results": failed}])
 
 
 def _findings_md(block, unmet):
