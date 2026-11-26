@@ -10,7 +10,7 @@ from .config import RETRO_LOG
 from .util import plural, read_json, read_jsonl
 
 TOKENS = ("in", "cache_r", "out")
-HOOKS = ("hook_calls", "edit_blocks", "stop_blocks", "guard_blocks", "hook_errors")
+HOOKS = ("hook_calls", "edit_blocks", "stop_blocks", "guard_blocks", "gates_blocks", "hook_errors")  # gates: in-session `agent-kit gates`
 REVIEWS = ("review_skipped", "review_light", "review_full", "review_usd", "review_in", "review_cache_r")
 FOLLOW = ("polls", "triaged", "triage_usd", "comment_fixes", "ci_fixes", "needs_human")  # after the PR is open
 REFINE = ("refine_checks", "refine_failed", "refine_proposed", "refine_usd", "refine_applied", "split_created")
@@ -31,7 +31,8 @@ def hook_counts(rows, state):
     def n(event, outcome):
         return sum(1 for r in mine if (event is None or r.get("event") == event) and r.get("outcome") == outcome)
     return {"hook_calls": len(mine), "edit_blocks": n("post-edit", hook_log.BLOCK),
-            "stop_blocks": n("stop", hook_log.BLOCK), "guard_blocks": n("guard", hook_log.BLOCK), "hook_errors": n(None, hook_log.ERROR)}
+            "stop_blocks": n("stop", hook_log.BLOCK), "guard_blocks": n("guard", hook_log.BLOCK),
+            "gates_blocks": n("gates", hook_log.BLOCK), "hook_errors": n(None, hook_log.ERROR)}
 
 
 def review_counts(state, calls):
@@ -111,7 +112,7 @@ COLUMNS = [("ticket", "key"), ("status", "status"), ("usd", "usd"), ("calls", "c
            ("cm_fix", "comment_fixes"), ("ci_fix", "ci_fixes"), ("human", "needs_human"), ("rf_chk", "refine_checks"), ("rf_fail", "refine_failed"),
            ("rf_prop", "refine_proposed"), ("rf_usd", "refine_usd"), ("rf_appl", "refine_applied"), ("rf_split", "split_created"),
            ("par", "parallel"), ("lk_stale", "lock_stale"), ("lk_busy", "lock_busy"), ("gates", "gates"), ("tdd", "tdd"),
-           ("hooks", "hook_calls"), ("edit_blk", "edit_blocks"), ("stop_blk", "stop_blocks"), ("guard_blk", "guard_blocks"), ("hook_err", "hook_errors"), *((t, t) for t in TOKENS)]
+           ("hooks", "hook_calls"), ("edit_blk", "edit_blocks"), ("stop_blk", "stop_blocks"), ("guard_blk", "guard_blocks"), ("gates_blk", "gates_blocks"), ("hook_err", "hook_errors"), *((t, t) for t in TOKENS)]
 
 
 def retro_line(runs_dir):

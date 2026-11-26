@@ -139,7 +139,8 @@ the round limits and lets the last CI failure be retried. A fix interrupted mid-
 - gate errors and review findings seen in at least `retro.min_runs` (default 2) different runs. Gate
   errors are the first `retro.error_lines` (default 3) error lines of each failing gate: every failing
   round the loop recorded (`gate_failures` in `state.json`; older runs: the final `gates`), a crashed
-  run's error, and the post-edit and stop hook blocks. Lines are normalized before they are compared
+  run's error, the post-edit and stop hook blocks, and the failures of `agent-kit gates` calls Claude
+  made itself during the run (`gates` rows in the hook log, so this works without the hooks). Lines are normalized before they are compared
   (worktree and repo folders stripped, temp dirs, hex ids and numbers replaced; quoted values kept,
   an apostrophe is not a quote).
   Findings (TDD ones included) are grouped by their normalized text;
@@ -233,9 +234,12 @@ Hooks (`agent-kit hooks install`, `uninstall` removes only agent-kit's entries):
   file, outcome `pass|block|skip|give_up|error`, gates with times, and a note of up to
   `hooks.note_chars` (default `600`) chars). This includes a config that fails to load. The log is
   the only record of what a post-edit hook told Claude: that feedback is not in the session log.
+  `agent-kit gates` run inside a loop run's worktree (Claude checking its own work) adds a `gates` row
+  there too (`block` with the failures as note, else `pass`), tied to the run by Claude's session id
+  (`CLAUDE_CODE_SESSION_ID`), or by the run key when there is none; outside a run it logs nothing.
   `agent-kit run` prints each call live during implement and fix sessions (review edits nothing),
   `agent-kit log <n> [step]` lists a ticket's calls under `## hooks` (matched by Claude session id),
-  `agent-kit report` counts them per ticket (`hooks`, `edit_blk`, `stop_blk`, `guard_blk`, `hook_err`) and
+  `agent-kit report` counts them per ticket (`hooks`: all rows incl. `gates`, `edit_blk`, `stop_blk`, `guard_blk`, `gates_blk`, `hook_err`) and
   `doctor` warns about hook errors in the last `hooks.error_window_hours` (default `24`).
 - `guard.*`: a PreToolUse scope guard (`agent-kit hook guard`). During a loop run (a run whose
   worktree is the session's checkout and that is still implementing or fixing) it blocks

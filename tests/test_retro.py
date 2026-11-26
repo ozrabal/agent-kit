@@ -147,6 +147,13 @@ class RunFactsTest(unittest.TestCase):
                                        {"gate": "test", "text": "N failed in N"},
                                        {"gate": "compile todo/cli.py", "text": 'File "todo/cli.py", line N'}])
 
+    def test_in_session_gates_block_rows_count_as_gate_errors(self):
+        state = {"ws": WS, "sessions": [{"step": "implement", "id": "s1"}]}
+        rows = [{"session": "s1", "event": "gates", "outcome": "block", "note": "FAIL test (0.4s)\n    E   assert 2 == 1"},
+                {"session": "s1", "event": "gates", "outcome": "pass"}]
+        f = run_facts(write_run(self.runs, 7, state), state, [], rows)
+        self.assertEqual(f["errors"], [{"gate": "test", "text": "E assert N == N"}])
+
     def test_review_findings_including_tdd_ones(self):
         state = {"ws": WS, "reviews": [
             {"findings": [{"severity": "major", "file": "todo/store.py", "line": 12,
@@ -334,7 +341,7 @@ class RenderTest(unittest.TestCase):
         return aggregate([
             facts(1, errors=[("test", "E assert N == N")] * 2, findings=[("major", "todo/store.py", text)],
                   denials=[("claude", "Bash", "npm run"), ("guard", "Bash", "git push")],
-                  steps={"implement": {"calls": 1, "usd": 0.05, "secs": 10}}, usd=0.05, fix_rounds=2, stop_blocks=1),
+                  steps={"implement": {"calls": 1, "usd": 0.05, "secs": 10}}, usd=0.05, fix_rounds=2, stop_blocks=1, gates_blocks=3),
             facts(2, errors=[("test", "E assert N == N"), ("lint", "F401")], findings=[("blocker", "todo/cli.py", text)],
                   denials=[("claude", "Bash", "npm run")], steps={"implement": {"calls": 1, "usd": 0.04, "secs": 9},
                                                                    "review": {"calls": 1, "usd": 0.01, "secs": 3}},
@@ -343,7 +350,7 @@ class RenderTest(unittest.TestCase):
     def test_report_sections(self):
         self.assertEqual(render(self.agg()), "\n".join([
             "retro: 2 runs, $0.10, fix rounds 2, review rounds 0, escalated 0, red/green failed 1",
-            "hook blocks: edit 0, stop 1, guard 0; after the PR: triaged 0, comment fixes 0, CI fixes 0, needs a human 0",
+            "hook blocks: edit 0, stop 1, guard 0, in-session gates 3; after the PR: triaged 0, comment fixes 0, CI fixes 0, needs a human 0",
             "",
             "## Most expensive steps",
             "- implement: $0.09, 2 calls in 2 runs, 19.0s",

@@ -439,12 +439,78 @@ def row(**kw):
     return {"event": "stop", "outcome": "pass", **kw}
 
 
+class RecordGates(HookTest):
+    """`agent-kit gates` run by Claude inside a loop run's worktree leaves a `gates` row in hooks.jsonl."""
+
+    def setUp(self):
+        super().setUp()
+        self.ws = self.root / "wt" / "5-fix-readme"
+        self.ws.mkdir(parents=True)
+        self.cfg = config(self.root)
+
+    def active(self, status="implementing"):
+        from agentkit.util import write_json
+        write_json(runs_dir(self.cfg) / "5" / "state.json",
+                   {"key": "#5", "ws": str(self.ws), "status": status, "sessions": [{"step": "implement", "id": "s1"}]})
+
+    def rows(self):
+        return read_jsonl(runs_dir(self.cfg) / "hooks.jsonl")
+
+    def record(self, ok, env=None):
+        rep = {"ok": ok, "results": [{"name": "unit", "ok": ok, "secs": 0.5, **({} if ok else {"output": "E1 broke"})}]}
+        return hooks.record_gates(self.cfg, str(self.ws), rep, t0=100.0,
+                                  env={"CLAUDE_CODE_SESSION_ID": "s1"} if env is None else env)
+
+    def test_failure_in_a_run_is_a_block_row_with_the_output(self):
+        self.active()
+        self.record(False)
+        [r] = self.rows()
+        self.assertEqual((r["event"], r["outcome"], r["session"], r["cwd"], r["key"], r["ts"]),
+                         ("gates", "block", "s1", str(self.ws), "#5", 100))
+        self.assertEqual(r["gates"], [{"name": "unit", "ok": False, "secs": 0.5}])
+        self.assertIn("FAIL unit (0.5s)\n    E1 broke", r["note"])
+
+    def test_pass_in_a_run_is_logged(self):
+        self.active(status="fixing-review-1")
+        self.record(True)
+        [r] = self.rows()
+        self.assertEqual((r["outcome"], r.get("note")), ("pass", None))
+
+    def test_outside_a_run_nothing_is_logged(self):
+        self.record(False)
+        self.active(status="pr-open")
+        self.record(False)
+        self.assertEqual(self.rows(), [])
+
+    def test_a_failed_log_write_is_returned_not_raised(self):
+        self.active()
+        (runs_dir(self.cfg) / "hooks.jsonl").mkdir()
+        self.assertIn("could not log this gates run", self.record(False))
+
+    def test_logged_call_returns_nothing_to_report(self):
+        self.active()
+        self.assertIsNone(self.record(False))
+
+    def test_without_a_session_id_the_row_has_none(self):
+        self.active()
+        self.record(False, env={})
+        [r] = self.rows()
+        self.assertIsNone(r["session"])
+
+
 class RowsFor(unittest.TestCase):
     def test_by_session_then_step(self):
         state = {"ws": "/repo", "sessions": [{"step": "implement", "id": "a"}, {"step": "fix-gates-1", "id": "b"}]}
         rows = [row(session="a", cwd="/repo"), row(session="b", cwd="/repo"), row(session="z", cwd="/repo")]
         self.assertEqual([r["session"] for r in hooks.rows_for(rows, state)], ["a", "b"])
         self.assertEqual([r["session"] for r in hooks.rows_for(rows, state, step="fix-gates-1")], ["b"])
+
+    def test_rows_without_a_session_match_by_run_key(self):
+        state = {"key": "#5", "ws": "/repo", "sessions": [{"step": "implement", "id": "a"}]}
+        rows = [row(session=None, key="#5", cwd="/repo"), row(session=None, key="#6", cwd="/repo"),
+                row(session=None, cwd="/repo"), row(session="z", key="#5", cwd="/repo")]
+        self.assertEqual([r.get("key") for r in hooks.rows_for(rows, state)], ["#5"])
+        self.assertEqual(hooks.rows_for(rows, state, step="implement"), [])
 
     def test_old_runs_without_sessions_match_by_worktree(self):
         rows = [row(session="a", cwd="/wt/7"), row(session="b", cwd="/wt/7/sub"), row(session="c", cwd="/wt/70")]

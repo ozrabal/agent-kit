@@ -33,7 +33,7 @@ SCHEMA = {
 }
 
 # report.collect counts kept on each run's facts
-COUNTS = ("usd", "fix_rounds", "review_rounds", "escalated", "edit_blocks", "stop_blocks", "guard_blocks",
+COUNTS = ("usd", "fix_rounds", "review_rounds", "escalated", "edit_blocks", "stop_blocks", "guard_blocks", "gates_blocks",
           "triaged", "comment_fixes", "ci_fixes", "needs_human")
 
 _TMP = re.compile(r"(?<![\w./-])(?:/private)?(?:/var/folders|/tmp)/[^\s'\"`:,;)\]]*")
@@ -72,7 +72,8 @@ def _rendered_failures(text):
 
 def _gate_errors(state, rows, n, roots):
     """(gate, output) pairs: each recorded failing round (else the final gates report), the error lines
-    of a run that crashed, and the BLOCK notes of the run's post-edit and stop hooks."""
+    of a run that crashed, and the BLOCK notes of the run's post-edit and stop hooks and of in-session
+    `agent-kit gates` calls."""
     reports = state.get("gate_failures")
     if reports is None:  # runs from before gate_failures was recorded
         reports = [state["gates"]] if state.get("gates") and not state["gates"].get("ok") else []
@@ -81,7 +82,7 @@ def _gate_errors(state, rows, n, roots):
     if failure and not failure.get("details") and failure.get("reason"):  # an exception, not gates or review
         pairs.append(("run", failure["reason"]))
     for row in rows:
-        if row.get("event") in ("post-edit", "stop") and row.get("outcome") == hook_log.BLOCK:
+        if row.get("event") in ("post-edit", "stop", "gates") and row.get("outcome") == hook_log.BLOCK:
             pairs += _rendered_failures(row.get("note"))
     return [{"gate": g, "text": normalize(l, roots)} for g, out in pairs for l in error_lines(out, n)]
 
@@ -238,7 +239,8 @@ def render(agg):
     out = [f"retro: {plural(agg['runs'], 'run')}, ${c.get('usd', 0):.2f}, fix rounds {c.get('fix_rounds', 0)}, "
            f"review rounds {c.get('review_rounds', 0)}, escalated {c.get('escalated', 0)}, "
            f"red/green failed {c.get('tdd_failed', 0)}",
-           f"hook blocks: edit {c.get('edit_blocks', 0)}, stop {c.get('stop_blocks', 0)}, guard {c.get('guard_blocks', 0)}; "
+           f"hook blocks: edit {c.get('edit_blocks', 0)}, stop {c.get('stop_blocks', 0)}, guard {c.get('guard_blocks', 0)}, "
+           f"in-session gates {c.get('gates_blocks', 0)}; "
            f"after the PR: triaged {c.get('triaged', 0)}, comment fixes {c.get('comment_fixes', 0)}, "
            f"CI fixes {c.get('ci_fixes', 0)}, needs a human {c.get('needs_human', 0)}"]
     out += _section("Most expensive steps", [f"- {s['step']}: ${s['usd']:.2f}, {plural(s['calls'], 'call')} in "
