@@ -131,7 +131,7 @@ class CacheFriendlyPrompts(unittest.TestCase):
 
     def test_implement_prompt_puts_instructions_before_ticket_and_context(self):
         text = prompt("implement", key="#7", number=7, title="T", body="BODY", context="CTX",
-                      gate_names="test", pr_sections="Summary")
+                      gate_names="test", pr_sections="Summary", questions="")
         idx = [text.index(x) for x in ("## How to work", "## Return", "BODY", "CTX")]
         self.assertEqual(idx, sorted(idx))
         self.assertNotIn("$", text)

@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from string import Template
 
-from . import followup, gates, hooks, kb, llm, parallel, refine, report, tdd
+from . import followup, gates, hooks, kb, llm, parallel, questions, refine, report, tdd
 from .config import FIXING_REVIEW, IMPLEMENTING, READ_ONLY_BASH, fmt, runs_dir
 from .tracker import make
 from .util import KIT_DIR, clip, compact, log, out, read_json, sh, slug, write_json
@@ -37,6 +37,9 @@ IMPL_SCHEMA = {
     },
     "required": ["summary", "pr_sections", "lessons", "concerns"],
 }
+IMPL_Q_SCHEMA = {**IMPL_SCHEMA,  # loop.questions: the implementer may stop and ask
+                 "properties": {**IMPL_SCHEMA["properties"], "questions": {"type": "array", "items": questions.ITEM}},
+                 "required": IMPL_SCHEMA["required"] + ["questions"]}
 REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
@@ -225,6 +228,8 @@ class Loop:
                 usd = sum((llm.cost_summary(r.cost_log) or {}).get(k, {}).get("usd", 0)
                           for k in (llm.cost_summary(r.cost_log) or {}))
                 note = followup.status_note(r.s, self.cfg["loop"])
+                if r["status"] == "questions":
+                    note = f"waiting for your answer on issue #{r['number']} (round {r['question_rounds']})"
                 held = parallel.holder(r.dir / "lock")
                 batch = (r["parallel"] or {}).get("batch") or []
                 working = r["status"] in ("queued", IMPLEMENTING) or str(r["status"])[len(FIXING_REVIEW):].isdigit()
@@ -459,13 +464,13 @@ class Loop:
             rules.append(" ".join(cmd.split()[:2]) + " *")
         return [f"Bash({r})" for r in dict.fromkeys(rules)]
 
-    def _impl(self, run, ws, text, step, resume=None, model=None):
+    def _impl(self, run, ws, text, step, resume=None, model=None, schema=IMPL_SCHEMA, budget=None):
         c = self.cfg
         with hooks.watch(c, ws, step):  # print the session's hook calls live
             res, sid = self.claude(
                 text, cwd=ws, step=step, model=model or c["models"]["implement"], effort=c["effort"]["implement"],
-                schema=IMPL_SCHEMA, tools=c["implement"]["tools"], permission_mode=c["implement"]["permission_mode"],
-                allow=self._allow(), budget=c["budget_usd"]["fix" if resume else "implement"], resume=resume,
+                schema=schema, tools=c["implement"]["tools"], permission_mode=c["implement"]["permission_mode"],
+                allow=self._allow(), budget=c["budget_usd"][budget or ("fix" if resume else "implement")], resume=resume,
                 persist=True, timeout=c["loop"]["timeout_seconds"], cost_log=run.cost_log,
                 stream_log=run.dir / f"{step.replace(':', '-')}.log")
         sessions = (run["sessions"] or []) + [{"step": step.replace(":", "-"), "id": sid or resume}]
@@ -514,15 +519,25 @@ class Loop:
         run = Run(c, n)
         ctx = self._context(issue, key)
         gate_names = ", ".join(g["name"] for g in map(gates._norm, c["gates"])) or "(none)"
+        ask = prompt("implement-questions").rstrip("\n") if c["loop"]["questions"]["enabled"] else ""
         impl_prompt = prompt("implement", key=key, number=n, title=issue["title"], body=issue["body"] or "",
-                             context=ctx, gate_names=gate_names, pr_sections=", ".join(c["pr"]["sections"]))
+                             context=ctx, gate_names=gate_names, pr_sections=", ".join(c["pr"]["sections"]),
+                             questions=ask)
         if dry:
             print(impl_prompt)
             log(f"dry run: {key} would start; prompt is {len(impl_prompt)} chars (~{len(impl_prompt) // 4} tokens)")
             return True
 
         with self._ticket_lock(run, key) as busy:
-            return False if busy else self._work(run, issue, ctx, impl_prompt)
+            if busy:
+                return False
+            answers = None
+            if run["status"] == "questions":
+                answers = self._answers(run)
+                if not answers:
+                    log(f"{key}: still waiting for answers on issue #{n}")
+                    return True
+            return self._work(run, issue, ctx, impl_prompt, answers)
 
     @contextlib.contextmanager
     def _ticket_lock(self, run, key):
@@ -552,7 +567,7 @@ class Loop:
     def _lock_event(self, run, event, pid):
         run.set(locks=((run["locks"] or []) + [{"ts": int(time.time()), "event": event, "pid": pid}])[-LOCKS_KEPT:])
 
-    def _work(self, run, issue, ctx, impl_prompt):
+    def _work(self, run, issue, ctx, impl_prompt, answers=None):
         c, n, key = self.cfg, issue["number"], issue["key"]
         log(f"=== {key} (#{n}): {issue['title']}")
         run.set(key=key, title=issue["title"], status=IMPLEMENTING)
@@ -562,11 +577,15 @@ class Loop:
         failure = None
         try:
             ws = self.workspace(run, issue)
-            if run["session"] and self._has_changes(ws):
+            if answers:
+                impl = self._resume_answered(run, ws, issue, impl_prompt, answers)
+            elif run["session"] and self._has_changes(ws):
                 log("resuming: existing changes and session found, skipping implement")
                 impl = run["impl"]
             else:
-                impl = self._impl(run, ws, impl_prompt, "implement")
+                impl = self._impl(run, ws, impl_prompt, "implement", schema=self._impl_schema(run))
+            if self._ask(run, issue, impl):
+                return True
             if not self._has_changes(ws):
                 raise RuntimeError("implementer produced no changes")
             failure = self._quality_rounds(run, ws, issue)
@@ -580,6 +599,53 @@ class Loop:
             log(f"{key}: failed before any change: {failure['reason'][:300] if failure else ''}")
             return False
         return self._ship(run, ws, issue, impl, failure)
+
+    # --- blocking questions (loop.questions) --------------------------------
+    def _impl_schema(self, run):
+        q = self.cfg["loop"]["questions"]
+        return IMPL_Q_SCHEMA if q["enabled"] and (run["question_rounds"] or 0) < q["max_rounds"] else IMPL_SCHEMA
+
+    def _ask(self, run, issue, impl):
+        """The implementer returned questions: post them on the issue, label needs_human, status questions.
+        The worktree and session stay; no PR. True when asked."""
+        q, n = self.cfg["loop"]["questions"], issue["number"]
+        items = (impl or {}).get("questions") or []
+        rnd = (run["question_rounds"] or 0) + 1
+        if not items or not q["enabled"] or rnd > q["max_rounds"]:
+            return False
+        self.tr.issue_comment(n, questions.comment(issue["key"], n, rnd, items))
+        self.tr.set_status(n, "wip", "needs_human")
+        run.set(status="questions", question_rounds=rnd,
+                questions=(run["questions"] or []) + [_stamped({"round": rnd, "items": items, "answers": None})])
+        log(f"{issue['key']}: {len(items)} question(s) posted on issue #{n} (round {rnd}); "
+            "the ticket waits for your answer, the loop goes on")
+        return True
+
+    def _answers(self, run):
+        """Trusted replies to the last questions comment, [] while unanswered."""
+        return questions.answers(self.tr.issue_comments(run["number"]), run["number"], run["question_rounds"],
+                                 self.cfg["pr"]["trusted_associations"], followup.MARKER)
+
+    def _resume_answered(self, run, ws, issue, impl_prompt, replies):
+        """Continue the implement session with the answers (a fresh session with them if the resume fails)."""
+        q, n, rnd = self.cfg["loop"]["questions"], issue["number"], run["question_rounds"]
+        asked = run["questions"]
+        asked[-1] = {**asked[-1], "answers": replies, "answered_ts": int(time.time())}
+        run.set(questions=asked)
+        self.tr.set_status(n, "needs_human", "wip")
+        text = questions.qa(asked[-1]["items"], replies)
+        log(f"{issue['key']}: answer found on issue #{n}; continuing the implement session")
+        more = ("If a new blocking question comes up, you may ask again in `questions`; otherwise leave it empty."
+                if rnd < q["max_rounds"] else
+                "Do not ask again: decide yourself, say so in `concerns` and leave `questions` empty.")
+        schema = self._impl_schema(run)
+        try:
+            return self._impl(run, ws, prompt("answer", number=n, key=issue["key"], qa=text, more=more),
+                              f"answer:{rnd}", resume=run["session"], schema=schema, budget="implement")
+        except llm.LLMError as e:
+            log(f"{issue['key']}: resuming session {run['session']} failed ({str(e)[:200]}); starting a fresh one")
+            return self._impl(run, ws, f"{impl_prompt}\n\n# Answers to your earlier questions\n\n{text}\n\n{more}",
+                              f"answer-fresh:{rnd}", schema=schema)
 
     def _fix(self, run, ws, text, step, rnd, last, kind):
         """A resumed fix round; the last allowed one (rnd == last) may use models.escalate."""
@@ -931,6 +997,8 @@ class Loop:
         while True:
             if not os.environ.get(parallel.CHILD_ENV):  # a parallel child: the parent reconciled
                 self.reconcile()
+                if not dry and not ticket:
+                    self.answered()
             self.tr.issues(refresh=True)
             pending = self.waiting()
             if not ticket and len(pending) >= self.cfg["merge"]["max_open_prs"] and not dry:
@@ -969,6 +1037,17 @@ class Loop:
             done += 1
             if dry or ticket or not ok:
                 return 0 if ok else 2
+
+    def answered(self):
+        """Runs waiting on questions whose answer is now on the issue: continue each one (to its PR) while a PR
+        slot (merge.max_open_prs) is free."""
+        for r in all_runs(self.cfg):
+            if r["status"] == "questions" and len(self.waiting()) < self.cfg["merge"]["max_open_prs"]:
+                try:
+                    if self._answers(r):
+                        self.do_ticket({**(i := self.tr.get(r["number"])), "key": self.tr.key(i)})
+                except RuntimeError as e:
+                    log(f"{r['key']}: checking answers failed: {str(e)[:300]}")
 
     def _batch(self, n):
         """Up to n independent ready tickets at the same time, one `agent-kit run --ticket N` process each.

@@ -283,6 +283,12 @@ class LoopModes(unittest.TestCase):
     def test_parallel_not_a_positive_int_fails(self):
         self.assertFalse(self.check(loop={"parallel": 0})["parallel"]["ok"])
 
+    def test_questions(self):
+        self.assertTrue(self.check()["questions"]["ok"])
+        self.assertTrue(self.check(loop={"questions": {"enabled": True, "max_rounds": 1}})["questions"]["ok"])
+        self.assertFalse(self.check(loop={"questions": {"enabled": "yes", "max_rounds": 1}})["questions"]["ok"])
+        self.assertFalse(self.check(loop={"questions": {"enabled": True, "max_rounds": 0}})["questions"]["ok"])
+
     def test_merge_policy(self):
         self.assertTrue(self.check()["merge"]["ok"] and not self.check()["merge"]["warn"])
         self.assertTrue(self.check(merge={"policy": "auto"})["merge"]["ok"])

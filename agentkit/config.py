@@ -49,6 +49,8 @@ DEFAULTS = {
         "refine": "check",
         # tickets at the same time (each its own worktree and process), never more than merge.max_open_prs open PRs
         "parallel": 1,
+        # implement may stop and ask (issue comment, label needs_human); answered on the issue, the session resumes
+        "questions": {"enabled": False, "max_rounds": 2},
         "max_fix_rounds": 2, "max_review_rounds": 2, "timeout_seconds": 3600,
         "max_ci_rounds": 2, "max_comment_rounds": 2,  # per PR, after it is open (agent-kit address / run --wait)
         # red/green: the branch's new tests must fail on the base; gate null = first gate named *test*
