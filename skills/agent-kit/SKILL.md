@@ -48,7 +48,8 @@ curl | sh, gh pr merge). A block is not an error to work around: do what the mes
   fix hint for each failure. Run it first when a run fails for setup reasons.
 - `agent-kit status`: ready, blocked and not-ready (refine) tickets, running PRs, their cost and lock holder.
 - `agent-kit report [--json] [--since <ts>]`: cost, tokens, fix and review rounds, escalated rounds, red/green
-  result, review decisions (skipped / light / full) and hook blocks per ticket run.
+  result, review decisions (skipped / light / full) and hook blocks per ticket run. With `--since`, the
+  counts come only from calls and state entries at or after it, not the run's whole history.
 - With `loop.tdd.enabled`, the tests you add must fail on the base branch: they are run there with the
   old code, and tests that pass without your change (or no tests) come back as a review finding.
 - `agent-kit refine <issue>`: is the ticket ready (an "Acceptance criteria" section with items, not too

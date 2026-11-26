@@ -74,9 +74,26 @@ def newer(rows, since):
     return [r for r in rows if since is None or (r.get("ts") or 0) >= since]
 
 
+STAMPED_LISTS = ("gate_failures", "reviews", "tdd_checks", "escalations", "triage", "follow_ups", "polls", "locks",
+                 "overrides")  # state.json lists whose entries carry a ts
+STAMPED_LAST = ("failure", "needs_human", "refine", "refine_apply", "parallel")  # one dict with a ts, the last recorded
+
+
+def since_state(state, since):
+    """state with its stamped entries cut to those recorded at or after since: STAMPED_LISTS keep newer entries,
+    STAMPED_LAST dicts are dropped when older; entries without ts (recorded before ts was) count as older. The
+    counters follow: poll_count = newer polls kept, refine_checks = 1 when the last check is newer. The latest
+    status, gates and tdd results (no ts) stay as they are. Unchanged for None."""
+    if since is None:
+        return state
+    cut = {k: newer(state.get(k) or [], since) for k in STAMPED_LISTS}
+    cut.update({k: state[k] if state.get(k) and (state[k].get("ts") or 0) >= since else None for k in STAMPED_LAST})
+    return {**state, **cut, "poll_count": len(cut["polls"]), "refine_checks": 1 if cut["refine"] else 0}
+
+
 def collect(runs_dir, since=None):
-    """{"rows": [one per ticket run], "total": sums}. since: unix ts; older calls are ignored
-    and runs with no newer calls are left out."""
+    """{"rows": [one per ticket run], "total": sums}. since: unix ts; older calls and state entries are
+    ignored (since_state) and runs with no newer calls are left out."""
     rows = []
     runs_dir = Path(runs_dir)
     hook_rows = newer(read_jsonl(runs_dir / hook_log.LOG_NAME), since)
@@ -85,7 +102,7 @@ def collect(runs_dir, since=None):
         calls = newer(read_jsonl(d / "cost.jsonl"), since)
         if since is not None and not calls:
             continue
-        state = read_json(d / "state.json", {}) or {}
+        state = since_state(read_json(d / "state.json", {}) or {}, since)
         steps = [step_kind(c) for c in calls]
         row = {
             "ticket": int(d.name), "key": state.get("key") or f"#{d.name}", "title": state.get("title") or "",
