@@ -176,7 +176,7 @@ class Doctor(unittest.TestCase):
     def failing_run(self, n, ts):
         d = self.root / ".agent" / "runs" / str(n)
         d.mkdir(parents=True)
-        (d / "state.json").write_text(json.dumps({"number": n, "gate_failures": [{"round": 0, "results": [
+        (d / "state.json").write_text(json.dumps({"number": n, "gate_failures": [{"ts": ts, "round": 0, "results": [
             {"name": "test", "ok": False, "secs": 1, "output": "E   assert 2 == 1"}]}]}))
         (d / "cost.jsonl").write_text(json.dumps({"ts": ts, "step": "implement", "usd": 0.05}) + "\n")
 
@@ -200,6 +200,15 @@ class Doctor(unittest.TestCase):
         self.assertTrue(res["warn"])
         self.assertEqual(res["hint"], "in 2 runs since the last retro: 1 repeated gate errors, 0 review findings, "
                                       "0 denied tools: run `agent-kit retro`")
+
+    def test_a_later_address_call_on_old_runs_does_not_warn_again(self):
+        self.failing_run(1, 100)
+        self.failing_run(2, 150)
+        self.retro_row(200, "llm")
+        for n in (1, 2):
+            with (self.root / ".agent" / "runs" / str(n) / "cost.jsonl").open("a") as f:
+                f.write(json.dumps({"ts": 300, "step": "address", "usd": 0.01}) + "\n")
+        self.assertFalse(self.results(config(self.root, {}), FakeRun(HEALTHY))["retro"]["warn"])
 
     def test_recent_hook_errors_warn(self):
         import time

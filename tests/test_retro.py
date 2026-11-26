@@ -229,7 +229,7 @@ class CollectTest(unittest.TestCase):
         self.runs = Path(self.tmp.name) / "repo" / ".agent" / "runs"
         shutil.copytree(FIXTURE, self.runs)
         state = {"ws": WS, "sessions": [{"step": "implement", "id": "s9"}], "fix_rounds": 1,
-                 "gate_failures": [{"round": 0, "results": [gate_out("test", "E   assert 2 == 1")]}]}
+                 "gate_failures": [{"ts": 1795700050, "round": 0, "results": [gate_out("test", "E   assert 2 == 1")]}]}
         d = write_run(self.runs, 171, state)
         (d / "cost.jsonl").write_text("".join(json.dumps(c) + "\n" for c in [
             {"ts": 1795700000, "step": "implement", "usd": 0.05, "secs": 10},
@@ -266,6 +266,34 @@ class CollectTest(unittest.TestCase):
                                               {"gate": "test", "text": "E assert N == N"}])
         self.assertEqual(facts[2]["counts"]["stop_blocks"], 1)
         self.assertEqual([f["ticket"] for f in collect(self.runs, since=1795700001)], [171])
+
+    def test_since_drops_state_entries_recorded_before_it(self):
+        finding = {"severity": "major", "file": "todo/a.py", "issue": "old finding"}
+        state = {"ws": WS, "sessions": [{"step": "implement", "id": "s8"}],
+                 "gate_failures": [{"ts": 1795800000, "round": 0, "results": [gate_out("test", "E   old")]},
+                                   {"ts": 1795900000, "round": 1, "results": [gate_out("test", "E   new")]},
+                                   {"round": 2, "results": [gate_out("test", "E   no ts")]}],
+                 "reviews": [{"ts": 1795800000, "findings": [finding]},
+                             {"ts": 1795900000, "findings": [{**finding, "issue": "new finding"}]},
+                             {"findings": [{**finding, "issue": "no ts"}]}],
+                 "tdd_checks": [{"ts": 1795800000, "status": "no_tests"}, {"ts": 1795900000, "status": "passes_on_base"},
+                                {"status": "no_tests"}],
+                 "failure": {"ts": 1795800000, "reason": "command failed (1): git push"}}
+        d = write_run(self.runs, 172, state)
+        (d / "cost.jsonl").write_text(json.dumps({"ts": 1795900000, "step": "address", "usd": 0.01}) + "\n")
+        [f] = [f for f in collect(self.runs, since=1795850000) if f["ticket"] == 172]
+        self.assertEqual(f["errors"], [{"gate": "test", "text": "E new"}])
+        self.assertEqual([x["text"] for x in f["findings"]], ["new finding"])
+        self.assertEqual(f["tdd_failed"], 1)
+        crash = {"failure": {"ts": 1795900000, "reason": "command failed (1): git push"}}
+        d = write_run(self.runs, 173, crash)
+        (d / "cost.jsonl").write_text(json.dumps({"ts": 1795900000, "step": "implement", "usd": 0.01}) + "\n")
+        [f] = [f for f in collect(self.runs, since=1795850000) if f["ticket"] == 173]
+        self.assertEqual(f["errors"], [{"gate": "run", "text": "command failed (N): git push"}])
+        [f] = [f for f in collect(self.runs) if f["ticket"] == 172]
+        self.assertEqual(len(f["errors"]), 4)
+        self.assertEqual(len(f["findings"]), 3)
+        self.assertEqual(f["tdd_failed"], 3)
 
     def test_no_runs_dir(self):
         self.assertEqual(collect(Path(self.tmp.name) / "none"), [])
@@ -530,7 +558,7 @@ class RetroRepo(unittest.TestCase):
 
     def failing_runs(self, *numbers):
         for n in numbers:
-            d = write_run(self.runs, n, {"gate_failures": [{"round": 0, "results": [gate_out("test", "E   assert 2 == 1")]}]})
+            d = write_run(self.runs, n, {"gate_failures": [{"ts": 100, "round": 0, "results": [gate_out("test", "E   assert 2 == 1")]}]})
             (d / "cost.jsonl").write_text(json.dumps({"ts": 100, "step": "implement", "usd": 0.05}) + "\n")
 
     def claude(self, text, **kw):

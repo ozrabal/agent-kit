@@ -262,6 +262,19 @@ class Rounds(unittest.TestCase):
         self.assertIn("AssertionError: 2 != 30", run["gate_failures"][0]["results"][0]["output"])
         self.assertTrue(run["gates"]["ok"])
 
+    def test_recorded_entries_carry_the_time_for_retro_since(self):
+        import time
+        t0 = int(time.time())
+        self.write({"app.py": NEW, "tests/test_app.py": WEAK.replace("True)", "False)")})
+        self.actions["fix-gates:1"] = {"tests/test_app.py": WEAK}
+        self.actions["fix-review:1"] = {"tests/test_app.py": PROVES}
+        _, run = self.rounds()
+        t1 = int(time.time())
+        for name in ("gate_failures", "reviews", "tdd_checks"):
+            self.assertTrue(run[name], name)
+            for entry in run[name]:
+                self.assertTrue(t0 <= entry["ts"] <= t1, (name, entry.get("ts")))
+
     def test_no_escalate_keeps_implement_model(self):
         self.write({"app.py": NEW, "tests/test_app.py": WEAK})
         self.actions["fix-review:1"] = {"tests/test_app.py": PROVES}

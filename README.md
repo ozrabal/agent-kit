@@ -132,7 +132,11 @@ the round limits and lets the last CI failure be retried. A fix interrupted mid-
 ## Retro: learn from past runs
 
 `agent-kit retro [--since <ts>] [--no-llm]` reads the runs in `.agent/runs/` (the same runs as
-`agent-kit report --since`: a run counts when it has an LLM call at or after the timestamp) and prints:
+`agent-kit report --since`: a run counts when it has an LLM call at or after the timestamp) and prints
+what follows. With `--since`, a selected run's recorded `gate_failures`, `reviews`, `tdd_checks` and
+crash `failure` count only from the timestamp on (each entry has a `ts` in `state.json`; entries
+without one, from older runs, count as older), so a later `agent-kit address` call on an old run does
+not bring its earlier failures back. The `doctor` retro check uses the same rule since the last retro.
 
 - totals: cost, fix and review rounds, escalations, failed red/green checks, hook blocks, PR follow-up;
 - the most expensive LLM steps;

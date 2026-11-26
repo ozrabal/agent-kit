@@ -128,10 +128,23 @@ def _denials(run_dir, calls, rows, roots):
     return found
 
 
-def run_facts(run_dir, state, calls, hook_rows, n_lines=3):
+def _since_state(state, since):
+    """state with its recorded lists (gate_failures, reviews, tdd_checks) and crash failure cut to entries
+    at or after since; entries without ts (recorded before ts was) count as older. Unchanged for None."""
+    if since is None:
+        return state
+    cut = {k: report.newer(state.get(k) or [], since) for k in ("gate_failures", "reviews", "tdd_checks")}
+    failure = state.get("failure")
+    if failure and (failure.get("ts") or 0) < since:
+        failure = None
+    return {**state, **cut, "failure": failure}
+
+
+def run_facts(run_dir, state, calls, hook_rows, n_lines=3, since=None):
     """What one ticket run teaches: gate error lines, review findings and denials (normalized), cost per
-    step kind, failed red/green checks. calls: its cost.jsonl rows; hook_rows: all hooks.jsonl rows."""
-    run_dir = Path(run_dir)
+    step kind, failed red/green checks. calls: its cost.jsonl rows; hook_rows: all hooks.jsonl rows;
+    since: only state entries recorded at or after it (see _since_state)."""
+    run_dir, state = Path(run_dir), _since_state(state, since)
     # its worktree, and the repo (<repo>/.agent/runs/<n>), as written and with symlinks resolved
     roots = [state.get("ws"), run_dir.absolute().parents[2], run_dir.resolve().parents[2]]
     rows = hook_log.rows_for(hook_rows, state)
@@ -146,15 +159,15 @@ def run_facts(run_dir, state, calls, hook_rows, n_lines=3):
 
 
 def collect(runs_dir, since=None, n_lines=3):
-    """run_facts for each ticket run report.collect selects (since: unix ts; older cost and hook rows
-    are ignored, runs with no newer LLM call left out), with its report counts under "counts"."""
+    """run_facts for each ticket run report.collect selects (since: unix ts; older cost and hook rows and
+    state entries are ignored, runs with no newer LLM call left out), with its report counts under "counts"."""
     runs_dir = Path(runs_dir)
     hook_rows = report.newer(read_jsonl(runs_dir / hook_log.LOG_NAME), since)
     facts = []
     for row in report.collect(runs_dir, since=since)["rows"]:
         d = runs_dir / str(row["ticket"])
         calls = report.newer(read_jsonl(d / "cost.jsonl"), since)
-        f = run_facts(d, read_json(d / "state.json", {}) or {}, calls, hook_rows, n_lines)
+        f = run_facts(d, read_json(d / "state.json", {}) or {}, calls, hook_rows, n_lines, since)
         f["counts"] = {k: row.get(k) or 0 for k in COUNTS}
         facts.append(f)
     return facts
