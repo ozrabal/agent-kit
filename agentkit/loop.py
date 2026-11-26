@@ -485,7 +485,7 @@ class Loop:
         plan = review_plan(c, changed, lines, issue["body"], reviewed=max(ran, key=TIERS.index, default=None))
         log(f"review plan: {plan['tier'].upper()}{' ' + plan['model'] if plan['run'] else ''} ({plan['reason']})")
         if not plan["run"]:
-            res = {"skipped": plan["reason"], "pass": True, "plan": plan}
+            res = _stamped({"skipped": plan["reason"], "pass": True, "plan": plan})
             run.set(reviews=hist + [res])
             return res, [], []
         stat = out(["git", "diff", "--stat", rng, "--", ".", *ex], cwd=ws)
@@ -500,8 +500,7 @@ class Loop:
                             cost_log=run.cost_log, stream_log=run.dir / f"review-{len(run['reviews'] or []) + 1}.log")
         block = [f for f in res["findings"] if f["severity"] in c["review"]["block_on"]]
         unmet = [x for x in res["criteria"] if not x["met"]]
-        res["pass"] = not block and not unmet
-        res["plan"] = plan
+        res = _stamped({**res, "pass": not block and not unmet, "plan": plan})
         log(f"review: {'PASS' if res['pass'] else 'FAIL'} ({len(block)} blocking, {len(unmet)} unmet criteria, "
             f"{len(res['findings']) - len(block)} minor)")
         hist = (run["reviews"] or []) + [res]
@@ -572,7 +571,7 @@ class Loop:
             failure = self._quality_rounds(run, ws, issue)
             impl = run["impl"]
         except (RuntimeError, llm.LLMError) as e:
-            failure = {"reason": str(e)[:3000]}
+            failure = _stamped({"reason": str(e)[:3000]})
             ws = Path(run["ws"]) if run["ws"] else None
             impl = run["impl"] or {"summary": "", "pr_sections": [], "lessons": [], "concerns": []}
         if ws is None or not self._has_changes(ws):
@@ -593,7 +592,7 @@ class Loop:
     def _tdd(self, run, ws, rv, block):
         """Red/green check; a result that does not prove the change becomes a blocking finding on rv."""
         res = tdd.check(self.cfg, ws, self.upstream, _pathspec_excludes(self.cfg["review"]["exclude"]))
-        run.set(tdd=res, tdd_checks=(run["tdd_checks"] or []) + ([res] if res else []))
+        run.set(tdd=res, tdd_checks=(run["tdd_checks"] or []) + ([_stamped(res)] if res else []))
         if not res:
             return
         log(f"tdd: {res['status'].upper()} ({res['reason']}"
@@ -977,11 +976,16 @@ class Loop:
         return max(parallel.worst(res), 2 if failed else 0), len(sel["picked"])
 
 
+def _stamped(entry):
+    """entry with the time it was recorded: `agent-kit retro --since` counts only newer state entries."""
+    return {**entry, "ts": int(time.time())}
+
+
 def _keep_gate_failure(run, rep, rnd):
     """Every failing gate report goes to state gate_failures for `agent-kit retro`: state gates keeps only the last."""
     if not rep["ok"]:
         failed = [r for r in rep["results"] if not r["ok"]]
-        run.set(gate_failures=(run["gate_failures"] or []) + [{"round": rnd, "results": failed}])
+        run.set(gate_failures=(run["gate_failures"] or []) + [_stamped({"round": rnd, "results": failed})])
 
 
 def _findings_md(block, unmet):
